@@ -1,0 +1,15 @@
+[package]
+name = "rust_injector"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies.winapi]
+version = "0.3.9"
+features=["errhandlingapi","tlhelp32","minwindef","handleapi","processthreadsapi","libloaderapi","memoryapi","winbase","synchapi"]
+
+[dependencies]
+widestring = "0.4.3"
+log = "0.4.14"
+scopeguard = "1.1.0"
