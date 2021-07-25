@@ -1,9 +1,34 @@
-mod platforms;
-use log::debug;
+use log::{debug,error};
+use std::fmt::Display;
 
 pub struct Injector<'a> {
     pub dll: &'a str,
     pub pid: u32,
+}
+
+type Error = (String,u32);
+type Result<T> = std::result::Result<T,Error>;
+
+#[doc(hidden)]
+fn __call__<T,R>(arg:T,f:impl FnOnce(T)->R)->R{
+    f(arg)
+}
+
+
+macro_rules! check_ptr {
+    ($name:ident($($args:expr),*),$predicate:expr)=>{
+        {
+            let _tmp = unsafe{$name($($args),*)};
+            if $crate::__call__(_tmp,$predicate){
+                return err(std::stringify!($name));
+            } else{
+               _tmp
+            }
+        }
+    };
+    ($name:ident($($args:expr),*))=>{
+        check_ptr!($name($($args),*),|v|v.is_null())
+    };
 }
 
 impl<'a> Injector<'a> {
@@ -16,10 +41,17 @@ impl<'a> Injector<'a> {
     pub fn set_pid(&mut self, pid: u32) {
         self.pid = pid;
     }
-    pub fn find_pid(name: &str) -> Result<Vec<u32>, (String, u32)> {
+    pub fn find_pid(name: &str) -> Result<Vec<u32>> {
         Self::find_pid_selector(|str| str == name)
     }
 }
+
+pub(crate) fn err_str<T,E>(err:E) -> Result<T>
+where E:Display {
+    error!("{}",err);
+    Err((format!("{}",err),0))
+}
+
 impl<'a> Default for Injector<'a> {
     fn default() -> Self {
         Self::new("", 0)
@@ -37,3 +69,6 @@ pub fn strip_rust_path(str:&str)->&str{
     debug!("self.dll='{}' and dll_no_path='{}'", str, str_no_path);
     str_no_path
 }
+
+#[macro_use]
+mod platforms;

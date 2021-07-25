@@ -1,14 +1,16 @@
 [package]
 name = "rust_injector"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2018"
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+#[target.'cfg(target_os="windows")'.dependencies.winapi]
 [dependencies.winapi]
 version = "0.3.9"
 
 features=[
+    "winnt",#Various constants/types, used in injection/ejection
+    "basetsd",#Types
     "errhandlingapi",#Get Errors
     "tlhelp32",#Find PID/Process Snapshot
     "minwindef",#Types
@@ -17,10 +19,22 @@ features=[
     "libloaderapi",#used in injection/ejection.
     "memoryapi",#Allocate,Free and Write Process memory. Used in injection
     "winbase",#Infinity. Used with "synchapi"
-    "winnt",#Various constants, used in injection/ejection
     "synchapi",#Wait, until Dll is actually attached.
-    "wow64apiset",#determine if self, or proc are running under WOW
+    "wow64apiset",#determine if proc is running under WOW
+    "sysinfoapi",#determine if self is running under WOW
 ]
+
+#wait for https://github.com/rust-lang/cargo/issues/1197
+
+#[target.'cfg(not(target_os="windows"))'.dependencies.winapi]
+#version = "0.3.9"
+#
+#features=[
+#    "winnt",#Various constants, used in injection/ejection
+#]
+[dependencies.ntapi]
+version = "0.3.6"
+features = ["user"]
 
 [dependencies]
 widestring = "0.4.3"
