@@ -68,10 +68,27 @@ impl<'a> Injector<'a> {
                 PROCESS_CREATE_THREAD | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION,
                 FALSE,self.pid),"Process");
 			debug!("Process Handle is {:?}",*proc);
-			//todo:make eject work independent of injector bitness
-			let k32_handle = check_ptr!(GetModuleHandleA(b"kernel32.dll\0".as_ptr() as *const i8));
-			//One could also use FreeLibrary here?
-			let thread_start = check_ptr!(GetProcAddress(k32_handle,b"FreeLibraryAndExitThread\0".as_ptr() as *const i8));
+			
+			let thread_start = {
+				//try to get the LoadLibraryA function direct from the target executable.
+				let (k32path, k32addr) = get_module_in_pid_predicate_selector(self.pid,
+				                                                              "KERNEL32.DLL",
+				                                                              |m| (m.szExePath, m.modBaseAddr),
+				                                                              None
+				)?;
+				let str = match WideCStr::from_slice_with_nul(&k32path) {
+					Ok(v) => result!(v.to_string()),
+					Err(e) => { return err_str(e); },
+				};
+				let k32 = result!(std::fs::read(&str));
+				
+				let dll_parsed = result!(Wrap::<pelite::pe32::PeFile,pelite::pe64::PeFile>::from_bytes(k32.as_slice()));
+				let lla = result!(dll_parsed.get_export_by_name("FreeLibraryAndExitThread")).symbol().unwrap();
+				debug!("FreeLibraryAndExitThread is {:x}",lla);
+				//todo: can we use add instead of wrapping_add?
+				k32addr.wrapping_add(lla as usize)
+			};
+			
 			
 			let mut thread_id: u32 = 0;
 			let thread = guard_check_ptr!(
@@ -189,7 +206,6 @@ impl<'a> Injector<'a> {
 			                                                              |m| (m.szExePath, m.modBaseAddr),
 			                                                              None
 			)?;
-			
 			let str = match WideCStr::from_slice_with_nul(&k32path) {
 				Ok(v) => result!(v.to_string()),
 				Err(e) => { return err_str(e); },
