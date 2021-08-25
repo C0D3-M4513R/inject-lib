@@ -32,11 +32,9 @@ features=[
 #features=[
 #    "winnt",#Various constants, used in injection/ejection
 #]
-[dependencies.ntapi]
-version = "0.3.6"
-features = ["user"]
 
 [dependencies]
 widestring = "0.4.3"
+pelite = "0.9.0" #to read dll information.
 log = "0.4.14"
 scopeguard = "1.1.0"
