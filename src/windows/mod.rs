@@ -1,17 +1,17 @@
 #![cfg(target_os = "windows")]
 
-use crate::{Injector, strip_rust_path, Result, err_str};
+use crate::{Injector, strip_rust_path, Result, err_str, strip_win_path, Error};
 use log::{debug, error, info, trace, warn};
 use std::mem::{size_of, MaybeUninit};
-use widestring::{WideCString, WideCStr};
+use widestring::{WideCString, WideCStr, WideStr};
 use winapi::shared::minwindef::{DWORD, FALSE, MAX_PATH};
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
-use winapi::um::libloaderapi::{GetProcAddress, GetModuleHandleA};
+use winapi::um::libloaderapi::{GetProcAddress, LoadLibraryA};
 use winapi::um::memoryapi::{VirtualAllocEx, VirtualFreeEx, WriteProcessMemory};
 use winapi::um::processthreadsapi::{OpenProcess, CreateRemoteThread, GetCurrentProcess};
 use winapi::um::tlhelp32::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, LPPROCESSENTRY32W, PROCESSENTRY32W, TH32CS_SNAPPROCESS, TH32CS_SNAPMODULE, MODULEENTRY32W, MAX_MODULE_NAME32, Module32FirstW, Module32NextW, TH32CS_SNAPMODULE32};
-use winapi::um::winnt::{MEM_COMMIT, MEM_RELEASE, PROCESS_CREATE_THREAD, PROCESS_VM_OPERATION, PROCESS_VM_WRITE, MEM_RESERVE, PROCESS_QUERY_INFORMATION, IMAGE_FILE_MACHINE_UNKNOWN, PROCESSOR_ARCHITECTURE_INTEL, PROCESSOR_ARCHITECTURE_AMD64, HANDLE, IMAGE_FILE_MACHINE_AMD64, IMAGE_FILE_MACHINE_I386, PAGE_EXECUTE_READWRITE};
+use winapi::um::winnt::{MEM_COMMIT, MEM_RELEASE, PROCESS_CREATE_THREAD, PROCESS_VM_OPERATION, PROCESS_VM_WRITE, MEM_RESERVE, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, IMAGE_FILE_MACHINE_UNKNOWN, PROCESSOR_ARCHITECTURE_INTEL, PROCESSOR_ARCHITECTURE_AMD64, HANDLE, IMAGE_FILE_MACHINE_AMD64, IMAGE_FILE_MACHINE_I386, PAGE_EXECUTE_READWRITE, PROCESS_VM_READ};
 use winapi::ctypes::c_void;
 use winapi::um::synchapi::WaitForSingleObject;
 use winapi::um::winbase::INFINITE;
@@ -19,6 +19,11 @@ use winapi::um::wow64apiset::IsWow64Process2;
 use winapi::um::sysinfoapi::{SYSTEM_INFO, GetNativeSystemInfo};
 use std::fmt::Display;
 use pelite::Wrap;
+use ntapi::ntpsapi::{ProcessBasicInformation, PROCESS_BASIC_INFORMATION, PEB_LDR_DATA, PROCESSINFOCLASS};
+use ntapi::ntpebteb::PEB;
+use winapi::shared::ntdef::{PVOID, ULONG, PULONG, NTSTATUS, NT_SUCCESS, NT_ERROR, NT_WARNING};
+use winapi::shared::basetsd::{SIZE_T, PSIZE_T, DWORD64, ULONG64, PDWORD64};
+use ntapi::ntldr::LDR_DATA_TABLE_ENTRY;
 
 macro_rules! guard_check_ptr {
     ($name:ident($($args:expr),*),$guard:literal) => {
@@ -29,7 +34,7 @@ macro_rules! guard_check_ptr {
                 error!("Error during cleanup!");
                 //Supress unused_must_use warning. This is intended, but one cannot use allow, to supress this?
                 //todo: a bit hacky? Is there a better way, to achieve something similar?
-                void_res::<()>(err(("CloseHandle of ".to_string()+std::stringify!($name))));
+                void_res(err::<(),String>(("CloseHandle of ".to_string()+std::stringify!($name))));
                 panic!("Error during cleanup");
             }
         }
@@ -39,14 +44,16 @@ macro_rules! guard_check_ptr {
         scopeguard::guard(check_ptr!($name($($args),*)),$guard)
     };
 }
-
-macro_rules! result {
-	($res:expr) => {
-		match $res{
-			Ok(v)=>v,
-			Err(e)=>{return err_str(e);},
+macro_rules! check_nt_status {
+	($status:expr)=>{
+		{
+			let status = $status;
+			if let Some(tmp)=check_nt_status(status){
+				return Err(tmp);
+			}
+			status
 		}
-	};
+	}
 }
 
 impl<'a> Injector<'a> {
@@ -127,6 +134,8 @@ impl<'a> Injector<'a> {
 	///Open a Pr, if you know more about this!
 	///Return information (Outside of Ok and Err) is purely informational (for now)! It should not be relied upon, and may change in Minor updates.
 	///Notice:This implementation blocks, and waits, until the library is injected, or the injection failed.
+	/// # Panic
+	/// This function may panic, if a Handle cleanup fails.
 	pub fn inject(&self) -> Result<()> {
 		//What follows is a bunch of things, for injecting dlls cross-platform
 		//https://rce.co/knockin-on-heavens-gate-dynamic-processor-mode-switching/
@@ -148,7 +157,7 @@ impl<'a> Injector<'a> {
 		}
 		let proc = guard_check_ptr!(
             OpenProcess(
-            PROCESS_CREATE_THREAD | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION,
+            PROCESS_CREATE_THREAD | PROCESS_VM_WRITE | PROCESS_VM_READ| PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION ,
             FALSE,self.pid),"Process");
 		debug!("Process Handle is {:?}",*proc);
 		//Check DLL, target process bitness and the bitness, of this injector
@@ -168,18 +177,16 @@ impl<'a> Injector<'a> {
 		
 		//Is the target exe x86?
 		let pid_is_under_wow = if !sys_is_x64 { false } else {
-			get_proc_under_wow(*proc)?
+			unsafe{get_proc_under_wow(*proc)?}
 		};
 		
 		// Is this exe x86?
 		let self_is_under_wow = if !sys_is_x64 { false } else {
-			get_proc_under_wow(unsafe { GetCurrentProcess() })?
+			unsafe {get_proc_under_wow( GetCurrentProcess() )}?
 		};
 		info!("pid_is_under_wow:{},self_is_under_wow:{}",pid_is_under_wow,self_is_under_wow);
 		if self_is_under_wow && !pid_is_under_wow {
-			return err_str("Injection from a x86 injector into a x64 process is currently not supported, due to Limitations of CreateToolhelp32Snapshot.
-			https://docs.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot
-			If the specified process is a 64-bit process and the caller is a 32-bit process, this function fails and the last error code is ERROR_PARTIAL_COPY (299).");
+			info!("This injection will use a slightly different method, than usually. This is normal, when the injector is x86, but the pid specified is a x64 process.");
 		};
 		
 		let dll_is_x64 = self.get_is_dll_x64()?;
@@ -189,23 +196,64 @@ impl<'a> Injector<'a> {
 		} else if !dll_is_x64 && !pid_is_under_wow {
 			warn!("Injecting a x86 dll, into a x64 exe is unsupported. Could this case be supported? Send a PR, if you think, you can make this work! Will NOT abort, but expect the dll-injection to fail");
 		}
-		
-		//Is the dll already injected?
-		if get_module_in_pid_predicate(self.pid, self.dll, None).is_ok() {
-			return err_str("dll already injected");
-		} else {
-			error!("The above error is expected!")
+		//This check makes sure, that get_module_in_pid_predicate will not fail, due to x86->x64 injection.
+		if !self_is_under_wow || pid_is_under_wow{
+			//Is the dll already injected?
+			if get_module_in_pid_predicate(self.pid, self.dll, None).is_ok() {
+				return err_str("dll already injected");
+			} else {
+				error!("The above error is expected!")
+			}
 		}
-	
+		//todo: check with get_module_in_proc?
+		
 		//todo: add other paths, if bitness of injector == bitness of dll == bitness of target?
 		//todo: That could lead to better performance.
 		let entry_point = {
+			let (k32path, k32addr) = {
+				let predicate= |e:LDR_DATA_TABLE_ENTRY,s:Vec<u16>|{
+					let dll_name = match match WideCStr::from_slice_with_nul(s.as_slice()){
+						Ok(v)=>v.to_string(),
+						Err(e)=>{warn!("Couldn't convert full dll path, to string. Will skip this dll, in assumption, that this dll is invalid. Error is {}. Buf is {:x?}.",e,s); return None;}
+					}{
+						Ok(v)=>v,
+						Err(e)=>{warn!("Couldn't convert full dll path, to string. Will skip this dll, in assumption, that this dll is invalid. Error is {}. Buf is {:x?}.",e,s); return None;}
+					};
+					if strip_win_path(dll_name.as_str()) == "KERNEL32.DLL" {
+						return Some((s,e.DllBase));
+					}
+					return None;
+				};
+					if self_is_under_wow&&!pid_is_under_wow{
+						match unsafe{ get_module_in_proc(*proc,predicate)} {
+							Err((s,n))=>{
+								error!("get_module_in_proc has failed str:{} n:{:x}. There is no fallback available, since this injector seems to be x86, and the targeted exe is x64.",s,n);
+								return Err((s,n));
+							},
+							Ok(v)=>v,
+						}
+					} else{
+						match get_module_in_pid_predicate_selector(self.pid,
+						                                           "KERNEL32.DLL",
+						                                           |m| (m.szExePath, m.modBaseAddr),
+						                                           None
+						){
+							Ok((v,a))=>(v.to_vec(),a as *mut c_void),
+							Err((s,n))=>{
+								warn!("get_module_in_pid_predicate_selector failed, with str:{}, n:{}. Trying get_module_in_proc as fallback method.",s,n);
+								match unsafe{ get_module_in_proc(*proc,predicate)}{
+									Ok(v)=>v,
+									Err((s,n))=>{
+										error!("get_module_in_proc failed also, as a fallback. Is something fundamentally wrong? Is the process handle valid? str:{},n:{}",s,n);
+										return Err((s,n));
+									},
+								}
+							}
+						}
+					}
+				};
+			
 			//try to get the LoadLibraryA function direct from the target executable.
-			let (k32path, k32addr) = get_module_in_pid_predicate_selector(self.pid,
-			                                                              "KERNEL32.DLL",
-			                                                              |m| (m.szExePath, m.modBaseAddr),
-			                                                              None
-			)?;
 			let str = match WideCStr::from_slice_with_nul(&k32path) {
 				Ok(v) => result!(v.to_string()),
 				Err(e) => { return err_str(e); },
@@ -291,13 +339,17 @@ impl<'a> Injector<'a> {
 		}
 		//Check, if the dll is actually loaded?
 		//todo: can we skip this? is the dll always guaranteed to be loaded here, or is it up to the dll, to decide that?
-		get_module_in_pid_predicate_selector(self.pid,self.dll,|_|(),None)
+		//todo: re-add a check, for loaded modules
+		
+		// get_module_in_pid_predicate_selector(self.pid,self.dll,|_|(),None)
+		Err(("".to_string(),0))
 	}
 	///Find a PID, where the process-name matches some user defined selector
 	pub fn find_pid_selector<F>(select: F) -> Result<Vec<u32>>
 		where
-			F: Fn(&String) -> bool,
+			F: Fn(&PROCESSENTRY32W) -> bool,
 	{
+		
 		let mut pids: Vec<DWORD> = Vec::new();
 		let snap_handle = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
 		if snap_handle == INVALID_HANDLE_VALUE {
@@ -328,19 +380,8 @@ impl<'a> Injector<'a> {
 		
 		trace!("Ran Process32FirstW");
 		loop {
-			match WideCString::from_vec_with_nul(val.szExeFile)
-				.map_err(|_| "NULL expected in String, but not found. Skipping process.".to_string())
-				.and_then(|str| str.to_string()
-					.map_err(|_| format!("Invalid UTF-16 found. Skipping this proc. Lossy conversion would be:{}", str.to_string_lossy()))
-				) {
-				Ok(str) => {
-					trace!("Checking {}", str);
-					if select(&str) {
-						debug!("proc_name is {}. Adding to process matches", str);
-						pids.push(val.th32ProcessID);
-					}
-				}
-				Err(str) => warn!("{}", str)
+			if select(&val) {
+				pids.push(val.th32ProcessID);
 			}
 			if unsafe { Process32NextW(snap_handle, entry) == FALSE } {
 				break;
@@ -363,7 +404,14 @@ impl<'a> Injector<'a> {
 		Ok(dll_is_x64)
 	}
 }
-
+///Does NOT work, if the inejector is x86, and the target exe is x64.
+///This is, due to Microsoft constraints.
+///The Constraint lies with the Function `CreateToolhelp32Snapshot`. More in the Microsoft docs [here](https://docs.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot).
+///
+/// # Arguments
+///- pid: process pid
+///- predicate: a Function, which returns Some(value), when the desired module is found.
+///- snapshot_flags: an option, to pass other flags, to `CreateToolhelp32Snapshot`
 fn get_module_in_pid<F, T>(pid: u32, predicate: F, snapshot_flags: Option<u32>) -> Result<T>
 	where F: Fn(&MODULEENTRY32W) -> Option<T> {
 	let snap_modules =check_ptr!(CreateToolhelp32Snapshot(snapshot_flags.unwrap_or(TH32CS_SNAPMODULE32|TH32CS_SNAPMODULE), pid),|v|v==INVALID_HANDLE_VALUE);
@@ -390,13 +438,21 @@ fn get_module_in_pid<F, T>(pid: u32, predicate: F, snapshot_flags: Option<u32>) 
 		}
 	}
 }
-
+///Does NOT work, if the inejector is x86, and the target exe is x64.
+///This is, due to Microsoft constraints.
+///The Constraint lies with the Function `CreateToolhelp32Snapshot`. More in the Microsoft docs [here](https://docs.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot).
+///
+/// # Arguments
+///- pid: process pid
+///- dll: the dll, that is to be searched for
+///- selector: a Function, which returns any desired value.
+///- snapshot_flags: an option, to pass other flags, to `CreateToolhelp32Snapshot`
 fn get_module_in_pid_predicate_selector<F, T>(pid: u32, dll: &str, selector: F, snapshot_flags: Option<u32>) -> Result<T>
 	where F: Fn(&MODULEENTRY32W) -> T {
 	let dll_no_path = strip_rust_path(dll);
 	trace!("dll_no_path='{}'",dll_no_path);
 	get_module_in_pid(pid,
-	                  |module_entry: &MODULEENTRY32W| {
+	                  move |module_entry: &MODULEENTRY32W| {
 		                  //The errors below are not handled really well, because I do not think, they will actually occur.
 		                  let module_cstr = match unsafe { WideCString::from_ptr_with_nul(module_entry.szModule.as_ptr(), module_entry.szModule.len()) } {
 			                  Ok(v) => v,
@@ -415,31 +471,41 @@ fn get_module_in_pid_predicate_selector<F, T>(pid: u32, dll: &str, selector: F, 
 		                  trace!("module:'{}', module==dll_no_path:'{}'",module,module==dll_no_path);
 		                  if module == dll_no_path
 		                  {
-			                  return Some(selector(module_entry));
+			                  return Some(selector(&module_entry.clone()));
 		                  }
 		                  None
 	                  },
 	                  snapshot_flags,
 	)
 }
-
+///Does NOT work, if the inejector is x86, and the target exe is x64.
+///This is, due to Microsoft constraints.
+///The Constraint lies with the Function `CreateToolhelp32Snapshot`. More in the Microsoft docs [here](https://docs.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot).
+///
+/// # Arguments
+///- pid: process pid
+///- dll: the dll, that is to be searched for
+///- snapshot_flags: an option, to pass other flags, to `CreateToolhelp32Snapshot`
+///# Return value
+/// Returns the dll's base address.
 fn get_module_in_pid_predicate(pid: u32, dll: &str, snapshot_flags: Option<u32>) -> Result<*mut u8> {
 	get_module_in_pid_predicate_selector(pid,dll,
 	                  |module_entry: &MODULEENTRY32W| { module_entry.modBaseAddr },
 	                  snapshot_flags)
 }
 
-fn get_proc_under_wow(proc: HANDLE) -> Result<bool> {
+///Returns true, if the supplied process-handle is running under WOW, otherwise false.
+///# Safety
+///The process handle must have the PROCESS_QUERY_INFORMATION or PROCESS_QUERY_LIMITED_INFORMATION access right.
+unsafe fn get_proc_under_wow(proc: HANDLE) -> Result<bool> {
 	let mut process_machine: u16 = 0;
 	let mut native_machine: u16 = 0;
 	
-	if unsafe {
-		IsWow64Process2(
+	if IsWow64Process2(
 			proc,
 			&mut process_machine as *mut u16,
 			&mut native_machine as *mut u16,
-		)
-	} == FALSE {
+		) == FALSE {
 		return err("IsWow64Process2 number 1");
 	}
 	println!("proc:{:#x}", process_machine);
@@ -447,6 +513,111 @@ fn get_proc_under_wow(proc: HANDLE) -> Result<bool> {
 	
 	//That is, if the target exe, is compiled x86, but run on x64
 	Ok(process_machine != IMAGE_FILE_MACHINE_UNKNOWN)//The value will be IMAGE_FILE_MACHINE_UNKNOWN if the target process is not a WOW64 process; otherwise, it will identify the type of WoW process.
+}
+///Gets a module, by reading the Process Environment Block (PEB), of the process, using ntdll functions.
+///Because this function uses ntdll functions, it should work the same, if running as x86, or x64.
+///# Safety
+/// The proc handle must?(ntdll has no docs) have the PROCESS_VM_READ and (PROCESS_QUERY_INFORMATION or PROCESS_QUERY_LIMITED_INFORMATION?).
+/// The proc handle should also be valid.
+///
+/// # Arguments
+///
+///- proc: a Process Handle
+///- predicate: A function, which selects, what information, from what dll it wants.
+//TODO: add tons of checks
+//TODO: this could endlessly loop, if the predicate never matches!
+unsafe fn get_module_in_proc<F,R>(proc:HANDLE,predicate:F)->Result<R>
+where F:Fn(LDR_DATA_TABLE_ENTRY,Vec<u16>)->Option<R>{
+	let ntdll = LoadLibraryA(b"ntdll\0".as_ptr() as *const i8);
+	let self_is_under_wow = get_proc_under_wow(GetCurrentProcess())?;
+	let rvm:&[u8] = if self_is_under_wow{b"NtWow64ReadVirtualMemory64\0"} else {b"NtReadVirtualMemory\0"};
+	let qip:&[u8] = if self_is_under_wow{b"NtWow64QueryInformationProcess64\0"} else {b"NtQueryInformationProcess\0"};
+	
+	let NtQueryInformationProcess:fn(HANDLE,PROCESSINFOCLASS,PVOID, ULONG, PULONG) -> NTSTATUS = std::mem::transmute(check_ptr!(GetProcAddress(ntdll,qip.as_ptr() as *const i8)));
+	let NtReadVirtualMemory:fn (HANDLE, DWORD64, PVOID, ULONG64, PDWORD64) -> NTSTATUS = std::mem::transmute(check_ptr!(GetProcAddress(ntdll,rvm.as_ptr() as *const i8)));
+	
+	let peb_addr;
+	{
+		const SIZE_PBI:usize = std::mem::size_of::<PROCESS_BASIC_INFORMATION>();
+		let mut pbi = PROCESS_BASIC_INFORMATION{
+			ExitStatus: 0,
+			PebBaseAddress: std::ptr::null_mut(),
+			AffinityMask: 0,
+			BasePriority: 0,
+			UniqueProcessId: std::ptr::null_mut(),
+			InheritedFromUniqueProcessId: std::ptr::null_mut()
+		};
+		let pbi_ptr=(&mut pbi as *mut PROCESS_BASIC_INFORMATION) as *mut c_void;
+		let mut i:u32=0;
+		let status = check_nt_status!(NtQueryInformationProcess(proc,ProcessBasicInformation,pbi_ptr,SIZE_PBI as u32,&mut i as *mut u32));
+		trace!("qip1 {:x},{}/{}",status as u32,i,SIZE_PBI);
+		peb_addr = pbi.PebBaseAddress;
+		trace!("Peb addr is {:?}",peb_addr);
+	}
+	let ldr_addr;
+	{
+		let mut i:u64=0;
+		const SIZE_PEB:usize = std::mem::size_of::<PEB>();
+		let mut buf_peb = Vec::with_capacity(SIZE_PEB);
+		let status = check_nt_status!(NtReadVirtualMemory(proc, peb_addr as u64, buf_peb.as_mut_ptr() as *mut c_void, SIZE_PEB as u64, &mut i as *mut u64));
+		buf_peb.set_len(i as usize);
+		debug!("rvm peb {:x},{}/{}",status as u32,i,SIZE_PEB);
+		let peb_ptr:*const PEB = std::mem::transmute(buf_peb.as_ptr());
+		ldr_addr=(*peb_ptr).Ldr;
+	}
+	let mut modlist_addr;
+	{
+		let mut i:u64 =0;
+		const SIZE_LDR:usize = std::mem::size_of::<PEB_LDR_DATA>();
+		let mut buf_ldr:Vec<u8> = Vec::with_capacity(SIZE_LDR);
+		let status = check_nt_status!(NtReadVirtualMemory(proc, ldr_addr as u64, buf_ldr.as_mut_ptr() as *mut c_void, SIZE_LDR as u64, &mut i as *mut u64));
+		buf_ldr.set_len(i as usize);
+		debug!("rvm ldr {:x},{}/{}",status as u32,i,SIZE_LDR);
+		let peb_ldr:*const PEB_LDR_DATA = std::mem::transmute(buf_ldr.as_ptr());
+		modlist_addr=(*peb_ldr).InLoadOrderModuleList;
+	}
+	loop{
+		let ldr_entry={
+			let mut i:u64 =0;
+			const SIZE_LDR_ENTRY:usize = std::mem::size_of::<LDR_DATA_TABLE_ENTRY>();
+			let mut buf_ldr_entry:Vec<u8> = Vec::with_capacity(SIZE_LDR_ENTRY);
+			trace!("trying to read {:x?}",modlist_addr.Flink);
+			let status = check_nt_status!(NtReadVirtualMemory(proc, modlist_addr.Flink as u64, buf_ldr_entry.as_mut_ptr() as *mut c_void, SIZE_LDR_ENTRY as u64, &mut i as *mut u64));
+			buf_ldr_entry.set_len(i as usize);
+			debug!("rvm ldr_data_table_entry {:x},{}/{}",status as u32,i,SIZE_LDR_ENTRY);
+			let ldr_entry_ptr:*const LDR_DATA_TABLE_ENTRY=std::mem::transmute(buf_ldr_entry.as_ptr());
+			*ldr_entry_ptr
+		};
+		{
+			let dll_win_string=ldr_entry.FullDllName;
+			let mut dll_path:Vec<u16>=Vec::with_capacity(dll_win_string.MaximumLength as usize);
+			let mut i:u64=0;
+			trace!("trying to read {:x?}",dll_win_string.Buffer);
+			let status = check_nt_status!(NtReadVirtualMemory(proc,dll_win_string.Buffer as u64,dll_path.as_mut_ptr() as *mut c_void,dll_win_string.MaximumLength as u64,&mut i as *mut u64));
+			dll_path.set_len(i as usize);
+			debug!("rvm dll_name {:x},{}/{}",status as u32,i,dll_win_string.MaximumLength);
+			match WideCStr::from_slice_with_nul(dll_path.as_slice()){
+				Ok(v) => {
+					match v.to_string(){
+						Ok(dll_name)=>{
+							debug!("dll_name is {}",dll_name);
+						},
+						Err(e)=>{
+							debug!("dll_name could not be printed. error is:{}, os_string is {:?}",e,dll_path.as_slice());
+						}
+					}
+				},
+				Err(e) => {
+					debug!("dll_name could not be printed. error is:{}, os_string is {:?}",e,dll_path.as_slice());
+				}
+			}
+			if let Some(val)=predicate(ldr_entry,dll_path){
+				return Ok(val);
+			}else{
+				modlist_addr=ldr_entry.InLoadOrderLinks;
+			}
+		}
+	}
 }
 
 fn err<T, E>(fn_name: E) -> Result<T>
@@ -456,6 +627,16 @@ fn err<T, E>(fn_name: E) -> Result<T>
 	Err((fn_name.to_string(), err))
 }
 
+fn check_nt_status(status:NTSTATUS)->Option<Error>{
+	if NT_ERROR(status){
+		error!("Received error type, from ntdll, during NtQueryInformationProcess. Status code is: {:x}",status);
+		return Some(("ntdll".to_string(),status as u32))
+	}
+	if NT_WARNING(status){
+		warn!("Received warning type, from ntdll, during NtQueryInformationProcess. Status code is: {:x}",status);
+	}
+	None
+}
 
 ///NOP function.
 ///This exists, to do the same as #[allow(unused_must_use)].
