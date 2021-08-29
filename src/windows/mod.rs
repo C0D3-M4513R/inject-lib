@@ -1,29 +1,39 @@
 #![cfg(target_os = "windows")]
 
-use crate::{Injector, strip_rust_path, Result, err_str, strip_win_path, Error};
+use crate::{Injector, strip_rust_path, Result, err_str, strip_win_path, Error, __call__};
 use log::{debug, error, info, trace, warn};
 use std::mem::{size_of, MaybeUninit};
-use widestring::{WideCString, WideCStr, WideStr};
-use winapi::shared::minwindef::{DWORD, FALSE, MAX_PATH};
+use widestring::{WideCString, WideCStr};
+use winapi::shared::minwindef::{DWORD, FALSE, MAX_PATH, LPVOID};
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
 use winapi::um::libloaderapi::{GetProcAddress, LoadLibraryA};
-use winapi::um::memoryapi::{VirtualAllocEx, VirtualFreeEx, WriteProcessMemory};
+use winapi::um::memoryapi::{VirtualAllocEx, VirtualFreeEx, WriteProcessMemory, CreateFileMappingW, FILE_MAP_ALL_ACCESS, FILE_MAP_EXECUTE, MapViewOfFile, VirtualAlloc};
 use winapi::um::processthreadsapi::{OpenProcess, CreateRemoteThread, GetCurrentProcess};
 use winapi::um::tlhelp32::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, LPPROCESSENTRY32W, PROCESSENTRY32W, TH32CS_SNAPPROCESS, TH32CS_SNAPMODULE, MODULEENTRY32W, MAX_MODULE_NAME32, Module32FirstW, Module32NextW, TH32CS_SNAPMODULE32};
-use winapi::um::winnt::{MEM_COMMIT, MEM_RELEASE, PROCESS_CREATE_THREAD, PROCESS_VM_OPERATION, PROCESS_VM_WRITE, MEM_RESERVE, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, IMAGE_FILE_MACHINE_UNKNOWN, PROCESSOR_ARCHITECTURE_INTEL, PROCESSOR_ARCHITECTURE_AMD64, HANDLE, IMAGE_FILE_MACHINE_AMD64, IMAGE_FILE_MACHINE_I386, PAGE_EXECUTE_READWRITE, PROCESS_VM_READ};
+use winapi::um::winnt::{MEM_COMMIT, MEM_RELEASE, PROCESS_CREATE_THREAD, PROCESS_VM_OPERATION, PROCESS_VM_WRITE, MEM_RESERVE, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, IMAGE_FILE_MACHINE_UNKNOWN, PROCESSOR_ARCHITECTURE_INTEL, PROCESSOR_ARCHITECTURE_AMD64, HANDLE, IMAGE_FILE_MACHINE_AMD64, IMAGE_FILE_MACHINE_I386, PAGE_EXECUTE_READWRITE, PROCESS_VM_READ, PAGE_READWRITE, PROCESS_ALL_ACCESS, WOW64_CONTEXT, WOW64_FLOATING_SAVE_AREA};
 use winapi::ctypes::c_void;
 use winapi::um::synchapi::WaitForSingleObject;
-use winapi::um::winbase::INFINITE;
-use winapi::um::wow64apiset::IsWow64Process2;
-use winapi::um::sysinfoapi::{SYSTEM_INFO, GetNativeSystemInfo};
-use std::fmt::Display;
+use winapi::um::winbase::{INFINITE, Wow64SetThreadContext};
+use winapi::um::wow64apiset::{IsWow64Process2,Wow64DisableWow64FsRedirection,Wow64RevertWow64FsRedirection};
+use winapi::um::sysinfoapi::{SYSTEM_INFO, GetNativeSystemInfo, GetSystemWindowsDirectoryA};
+use std::fmt::{Display, Debug};
 use pelite::Wrap;
 use ntapi::ntpsapi::{ProcessBasicInformation, PROCESS_BASIC_INFORMATION, PEB_LDR_DATA, PROCESSINFOCLASS};
-use ntapi::ntpebteb::PEB;
-use winapi::shared::ntdef::{PVOID, ULONG, PULONG, NTSTATUS, NT_SUCCESS, NT_ERROR, NT_WARNING};
-use winapi::shared::basetsd::{SIZE_T, PSIZE_T, DWORD64, ULONG64, PDWORD64};
+use winapi::shared::ntdef::{PVOID, PVOID64, NTSTATUS, NT_ERROR, NT_WARNING, ULONG, PULONG};
+use winapi::shared::basetsd::{DWORD64, ULONG64, PDWORD64, PULONG64, SIZE_T};
 use ntapi::ntldr::LDR_DATA_TABLE_ENTRY;
+use ntapi::ntwow64::{PEB32, PEB_LDR_DATA32, LDR_DATA_TABLE_ENTRY32};
+use ntapi::ntpebteb::PEB;
+
+mod types;
+
+use types::{PROCESS_BASIC_INFORMATION_WOW64,PEB64,PEB_LDR_DATA64,LDR_DATA_TABLE_ENTRY64};
+use std::thread::{yield_now, sleep};
+use std::ops::Range;
+use std::ffi::OsString;
+use std::io::Write;
+use ntapi::ntmmapi::NtAllocateVirtualMemory;
 
 macro_rules! guard_check_ptr {
     ($name:ident($($args:expr),*),$guard:literal) => {
@@ -44,6 +54,8 @@ macro_rules! guard_check_ptr {
         scopeguard::guard(check_ptr!($name($($args),*)),$guard)
     };
 }
+///Checks a NtStatus, using [check_nt_status].
+///If [check_nt_status] returns Some value, it returns it, as an Err.
 macro_rules! check_nt_status {
 	($status:expr)=>{
 		{
@@ -157,7 +169,7 @@ impl<'a> Injector<'a> {
 		}
 		let proc = guard_check_ptr!(
             OpenProcess(
-            PROCESS_CREATE_THREAD | PROCESS_VM_WRITE | PROCESS_VM_READ| PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION ,
+            PROCESS_CREATE_THREAD | PROCESS_VM_WRITE | PROCESS_VM_READ| PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION,
             FALSE,self.pid),"Process");
 		debug!("Process Handle is {:?}",*proc);
 		//Check DLL, target process bitness and the bitness, of this injector
@@ -211,60 +223,92 @@ impl<'a> Injector<'a> {
 		//todo: That could lead to better performance.
 		let entry_point = {
 			let (k32path, k32addr) = {
-				let predicate= |e:LDR_DATA_TABLE_ENTRY,s:Vec<u16>|{
-					let dll_name = match match WideCStr::from_slice_with_nul(s.as_slice()){
-						Ok(v)=>v.to_string(),
-						Err(e)=>{warn!("Couldn't convert full dll path, to string. Will skip this dll, in assumption, that this dll is invalid. Error is {}. Buf is {:x?}.",e,s); return None;}
+				fn converter(v:Vec<u16>) -> Option<String>{
+					let dll_name = match match WideCStr::from_slice_with_nul(v.as_slice()){
+						Ok(s)=>s.to_string(),
+						Err(e)=>{warn!("Couldn't convert full dll path, to string. Will skip this dll, in assumption, that this dll is invalid. Error is {}. Buf is {:x?}.",e,v); return None;}
 					}{
-						Ok(v)=>v,
-						Err(e)=>{warn!("Couldn't convert full dll path, to string. Will skip this dll, in assumption, that this dll is invalid. Error is {}. Buf is {:x?}.",e,s); return None;}
+						Ok(string)=>string,
+						Err(e)=>{warn!("Couldn't convert full dll path, to string. Will skip this dll, in assumption, that this dll is invalid. Error is {}. Buf is {:x?}.",e,v); return None;}
 					};
 					if strip_win_path(dll_name.as_str()) == "KERNEL32.DLL" {
-						return Some((s,e.DllBase));
+						return Some(dll_name);
 					}
 					return None;
-				};
-					if self_is_under_wow&&!pid_is_under_wow{
-						match unsafe{ get_module_in_proc(*proc,predicate)} {
-							Err((s,n))=>{
-								error!("get_module_in_proc has failed str:{} n:{:x}. There is no fallback available, since this injector seems to be x86, and the targeted exe is x64.",s,n);
-								return Err((s,n));
-							},
-							Ok(v)=>v,
-						}
-					} else{
-						match get_module_in_pid_predicate_selector(self.pid,
-						                                           "KERNEL32.DLL",
-						                                           |m| (m.szExePath, m.modBaseAddr),
-						                                           None
-						){
-							Ok((v,a))=>(v.to_vec(),a as *mut c_void),
-							Err((s,n))=>{
-								warn!("get_module_in_pid_predicate_selector failed, with str:{}, n:{}. Trying get_module_in_proc as fallback method.",s,n);
-								match unsafe{ get_module_in_proc(*proc,predicate)}{
-									Ok(v)=>v,
-									Err((s,n))=>{
-										error!("get_module_in_proc failed also, as a fallback. Is something fundamentally wrong? Is the process handle valid? str:{},n:{}",s,n);
-										return Err((s,n));
-									},
-								}
-							}
+				}
+				type Return=(String,u64);
+				///Takes a Selector, and returns a type, for use with get_module_in_proc and get_module_in_pid
+				//todo: does this bring a performance benefit?
+				#[inline]
+				fn predicate<T>(f: impl Fn(T) -> u64) -> impl Fn(T,Vec<u16>) -> Option<Return> {
+					crate::hof::swap_fn_args(crate::hof::optpredicate(converter,move|s:String,i2|(s,f(i2))))
+				}
+				
+				let selector_pid = |m:&MODULEENTRY32W|m.modBaseAddr as u64;
+				
+				///Runs get_module_in_proc, with the supplied error handler.
+				fn run_get_module_in_proc(proc:HANDLE,f:impl Fn(Error)->Result<Return>) -> Result<Return>{
+					let selector_proc =|e:Wrap<LDR_DATA_TABLE_ENTRY32, LDR_DATA_TABLE_ENTRY64>|
+						match e {
+							Wrap::T32(v)=>v.DllBase as u64,
+							Wrap::T64(v)=>v.DllBase as u64,
+						};
+					match unsafe{ get_module_in_proc(proc, predicate(selector_proc))} {
+						Err(e)=>f(e),
+						Ok(v)=>Ok(v),
+					}
+				}
+				
+				if self_is_under_wow&&!pid_is_under_wow{
+					run_get_module_in_proc(*proc,|(s,n)|{
+						error!("Could not try get_module_in_pid first. We are a x86 injector, and injecting into a x64 process. Error details: str:{} n:{}",s,n);
+						Err((s,n))
+					})?
+				} else{
+					match get_module_in_pid(self.pid,
+                                   |m|predicate(selector_pid)(m,m.szExePath.to_vec()),
+                                   None
+					){
+						Ok(r)=>r,
+						Err((s,n))=>{
+							warn!("get_module_in_pid_predicate_selector failed, with str:{}, n:{}. Trying get_module_in_proc as fallback method.",s,n);
+							run_get_module_in_proc(*proc,|(s,n)|{
+								error!("get_module_in_proc failed also, as a fallback. Is something fundamentally wrong? Is the process handle valid? str:{},n:{}",s,n);
+								Err((s,n))
+							})?
 						}
 					}
-				};
-			
-			//try to get the LoadLibraryA function direct from the target executable.
-			let str = match WideCStr::from_slice_with_nul(&k32path) {
-				Ok(v) => result!(v.to_string()),
-				Err(e) => { return err_str(e); },
+				}
 			};
-			let k32 = result!(std::fs::read(&str));
+			//We need to replace System32, by Sysnative, in case we are running under WOW, because Windows will otherwise redirect all our file access.
+			
+			//One can also use the following methods: https://docs.microsoft.com/en-us/windows/win32/api/wow64apiset/nf-wow64apiset-wow64disablewow64fsredirection,https://docs.microsoft.com/en-us/windows/win32/api/wow64apiset/nf-wow64apiset-wow64revertwow64fsredirection
+			//I am not using those methods, because that WILL have impacts, if those functions fail.
+			//On failing to re-enable Filesystem redirection, I'd have to panic, since a x86 program, using this library, might do unwanted things.
+			let k32path = if self_is_under_wow{
+				let i=check_ptr!(GetSystemWindowsDirectoryA(std::ptr::null_mut(),0),|v|v==0);
+				let mut str_buf:Vec<u8> = Vec::with_capacity( i as usize);
+				let i2=check_ptr!(GetSystemWindowsDirectoryA(str_buf.as_mut_ptr() as *mut i8,i),|v|v==0);
+				if i2>i{
+					return err_str(format!("GetSystemWindowsDirectoryA says, that {} bytes are needed, but then changed it's mind. Now {} bytes are needed.",i,i2));
+				}
+				let str = result!(String::from_utf8(str_buf));
+				debug!("Windir is {}",str);
+				k32path.replace(&(str.clone() + &"System32".to_string()),&(str + &"Sysnative".to_string()))
+			}else{
+				k32path
+			};
+			// check_ptr!(Wow64DisableWow64FsRedirection(&mut par as *mut PVOID),|v|v==0);
+			info!("parsing {}|{}",k32path, result!(std::fs::canonicalize(&k32path)).to_string_lossy());
+			let k32 = result!(std::fs::read(&k32path));
+			// check_ptr!(Wow64RevertWow64FsRedirection(par),|v|v==0);
 			
 			let dll_parsed = result!(Wrap::<pelite::pe32::PeFile,pelite::pe64::PeFile>::from_bytes(k32.as_slice()));
 			let lla = result!(dll_parsed.get_export_by_name("LoadLibraryA")).symbol().unwrap();
-			debug!("LoadLibraryA is {:x}",lla);
+			info!("LoadLibraryA is {:x}. Kernel32.dll is at:{:x}. That will be our entry point.",lla,k32addr);
+			assert_eq!(lla, 0x204f0);
 			//todo: can we use add instead of wrapping_add?
-			k32addr.wrapping_add(lla as usize)
+			k32addr.wrapping_add(lla as u64)
 		};
 	
 		//Prepare Argument for LoadLibraryA
@@ -282,7 +326,7 @@ impl<'a> Injector<'a> {
 	                std::ptr::null_mut(),
 	                path_size,
 	                MEM_COMMIT | MEM_RESERVE,
-	                PAGE_EXECUTE_READWRITE
+	                PAGE_READWRITE
 	            ),|addr|{
 	                trace!("Releasing VirtualAlloc'd Memory");
 	                if (unsafe{VirtualFreeEx(*proc,addr,0,MEM_RELEASE)}==FALSE){
@@ -312,22 +356,25 @@ impl<'a> Injector<'a> {
 			}
 			mem
 		};
+		info!("Allocated LoadLibraryA Parameter at {:x?}",*mem);
+		debug!("entry proc:{:x} vs {:x}",entry_point,entry_point as usize);
+		
 		//Execute LoadLibraryA in remote thread, and wait for dll to load
-		{
+		if !self_is_under_wow||pid_is_under_wow {
 			let mut thread_id:u32=0;
 			let thread = guard_check_ptr!(
 			    CreateRemoteThread(
 			        *proc,
 			        std::ptr::null_mut(),
 			        0,
-			        Some(std::mem::transmute(entry_point)),
+			        Some(std::mem::transmute(entry_point as usize)),
 			        *mem,
 			        0,
 			        &mut thread_id as *mut u32
 			    ),"thread");
 			let thread_id = thread_id;
 			trace!("Thread is {:?} and thread id is {}", *thread, thread_id);
-			debug!("Waiting for DLL");
+			info!("Waiting for DLL");
 			// std::thread::sleep(Duration::new(0,500));//todo: why is this necessary, (only) when doing cargo run?
 			match unsafe{WaitForSingleObject(*thread,INFINITE)}{
 			    0x80=>{return err_str("WaitForSingleObject returned WAIT_ABANDONED")},//WAIT_ABANDONED
@@ -336,6 +383,9 @@ impl<'a> Injector<'a> {
 			    0xFFFFFFFF=>{return err("WaitForSingleObject")},//WAIT_FAILED
 			    _=>{}
 			}
+		}else{
+			unimplemented!("CreateRemoteThread is currently broken on x86->x64.");
+			//Idea: Grep x64 ntdll CreateRemoteThead equivalent, and somehow call it, with some WOW64CallFunction64 function.
 		}
 		//Check, if the dll is actually loaded?
 		//todo: can we skip this? is the dll always guaranteed to be loaded here, or is it up to the dll, to decide that?
@@ -404,7 +454,7 @@ impl<'a> Injector<'a> {
 		Ok(dll_is_x64)
 	}
 }
-///Does NOT work, if the inejector is x86, and the target exe is x64.
+///Does NOT work, if the injector is x86, and the target exe is x64.
 ///This is, due to Microsoft constraints.
 ///The Constraint lies with the Function `CreateToolhelp32Snapshot`. More in the Microsoft docs [here](https://docs.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot).
 ///
@@ -438,7 +488,7 @@ fn get_module_in_pid<F, T>(pid: u32, predicate: F, snapshot_flags: Option<u32>) 
 		}
 	}
 }
-///Does NOT work, if the inejector is x86, and the target exe is x64.
+///Does NOT work, if the injector is x86, and the target exe is x64.
 ///This is, due to Microsoft constraints.
 ///The Constraint lies with the Function `CreateToolhelp32Snapshot`. More in the Microsoft docs [here](https://docs.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot).
 ///
@@ -478,7 +528,7 @@ fn get_module_in_pid_predicate_selector<F, T>(pid: u32, dll: &str, selector: F, 
 	                  snapshot_flags,
 	)
 }
-///Does NOT work, if the inejector is x86, and the target exe is x64.
+///Does NOT work, if the injector is x86, and the target exe is x64.
 ///This is, due to Microsoft constraints.
 ///The Constraint lies with the Function `CreateToolhelp32Snapshot`. More in the Microsoft docs [here](https://docs.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot).
 ///
@@ -517,7 +567,7 @@ unsafe fn get_proc_under_wow(proc: HANDLE) -> Result<bool> {
 ///Gets a module, by reading the Process Environment Block (PEB), of the process, using ntdll functions.
 ///Because this function uses ntdll functions, it should work the same, if running as x86, or x64.
 ///# Safety
-/// The proc handle must?(ntdll has no docs) have the PROCESS_VM_READ and (PROCESS_QUERY_INFORMATION or PROCESS_QUERY_LIMITED_INFORMATION?).
+/// The proc handle must?(ntdll has no docs) have the PROCESS_VM_READ and (PROCESS_QUERY_INFORMATION or PROCESS_QUERY_LIMITED_INFORMATION?) access rights.
 /// The proc handle should also be valid.
 ///
 /// # Arguments
@@ -525,101 +575,128 @@ unsafe fn get_proc_under_wow(proc: HANDLE) -> Result<bool> {
 ///- proc: a Process Handle
 ///- predicate: A function, which selects, what information, from what dll it wants.
 //TODO: add tons of checks
-//TODO: this could endlessly loop, if the predicate never matches!
+//todo: less if's in this  function
 unsafe fn get_module_in_proc<F,R>(proc:HANDLE,predicate:F)->Result<R>
-where F:Fn(LDR_DATA_TABLE_ENTRY,Vec<u16>)->Option<R>{
-	let ntdll = LoadLibraryA(b"ntdll\0".as_ptr() as *const i8);
-	let self_is_under_wow = get_proc_under_wow(GetCurrentProcess())?;
-	let rvm:&[u8] = if self_is_under_wow{b"NtWow64ReadVirtualMemory64\0"} else {b"NtReadVirtualMemory\0"};
-	let qip:&[u8] = if self_is_under_wow{b"NtWow64QueryInformationProcess64\0"} else {b"NtQueryInformationProcess\0"};
-	
-	let NtQueryInformationProcess:fn(HANDLE,PROCESSINFOCLASS,PVOID, ULONG, PULONG) -> NTSTATUS = std::mem::transmute(check_ptr!(GetProcAddress(ntdll,qip.as_ptr() as *const i8)));
-	let NtReadVirtualMemory:fn (HANDLE, DWORD64, PVOID, ULONG64, PDWORD64) -> NTSTATUS = std::mem::transmute(check_ptr!(GetProcAddress(ntdll,rvm.as_ptr() as *const i8)));
-	
-	let peb_addr;
+where F:Fn(Wrap<LDR_DATA_TABLE_ENTRY32,LDR_DATA_TABLE_ENTRY64>,Vec<u16>)->Option<R>{
+	let pid_under_wow = get_proc_under_wow(proc)?;
+	info!("pid is under wow:{}",pid_under_wow);
+	let peb_addr:u64;
+	//This gets the PEB address, from the PBI
 	{
-		const SIZE_PBI:usize = std::mem::size_of::<PROCESS_BASIC_INFORMATION>();
-		let mut pbi = PROCESS_BASIC_INFORMATION{
-			ExitStatus: 0,
-			PebBaseAddress: std::ptr::null_mut(),
-			AffinityMask: 0,
-			BasePriority: 0,
-			UniqueProcessId: std::ptr::null_mut(),
-			InheritedFromUniqueProcessId: std::ptr::null_mut()
+		// let mut pbi = PROCESS_BASIC_INFORMATION{
+		// 	ExitStatus: 0,
+		// 	PebBaseAddress: std::ptr::null_mut(),
+		// 	AffinityMask: 0,
+		// 	BasePriority: 0,
+		// 	UniqueProcessId: std::ptr::null_mut(),
+		// 	InheritedFromUniqueProcessId: std::ptr::null_mut()
+		// };
+		// const SIZE_PBI:usize = std::mem::size_of::<PROCESS_BASIC_INFORMATION_WOW64>();
+		// let mut buf_pbi:Vec<u8> = Vec::with_capacity(100);
+		// let mut buf_pbi:Vec<u8> = Vec::with_capacity(SIZE_PBI);
+		let pbi:PROCESS_BASIC_INFORMATION_WOW64 = query_process_information(proc,ProcessBasicInformation)?;
+		// buf_pbi.set_len(i as usize);
+		// let pbi_ptr:*const PROCESS_BASIC_INFORMATION_WOW64 = std::mem::transmute(buf_pbi.as_ptr());
+		// let pbi = *pbi_ptr;
+		peb_addr = pbi.PebBaseAddress as u64;
+		debug!("Peb addr is {:x?}",peb_addr);
+	}
+	let ldr_addr ;
+	//This reads the PEB, and gets the LDR address
+	{
+		ldr_addr = if pid_under_wow{
+			let size_peb=std::mem::size_of::<PEB32>();
+			let peb=read_virtual_mem::<PEB32>(proc, peb_addr, size_peb)?;
+			(*peb).Ldr as u64
+		}else{
+			let size_peb=std::mem::size_of::<PEB64>();
+			let peb = read_virtual_mem::<PEB64>(proc, peb_addr, size_peb)?;
+			(*peb).Ldr as u64
 		};
-		let pbi_ptr=(&mut pbi as *mut PROCESS_BASIC_INFORMATION) as *mut c_void;
-		let mut i:u32=0;
-		let status = check_nt_status!(NtQueryInformationProcess(proc,ProcessBasicInformation,pbi_ptr,SIZE_PBI as u32,&mut i as *mut u32));
-		trace!("qip1 {:x},{}/{}",status as u32,i,SIZE_PBI);
-		peb_addr = pbi.PebBaseAddress;
-		trace!("Peb addr is {:?}",peb_addr);
+		debug!("Ldr Address is {:x}.",ldr_addr);
 	}
-	let ldr_addr;
-	{
-		let mut i:u64=0;
-		const SIZE_PEB:usize = std::mem::size_of::<PEB>();
-		let mut buf_peb = Vec::with_capacity(SIZE_PEB);
-		let status = check_nt_status!(NtReadVirtualMemory(proc, peb_addr as u64, buf_peb.as_mut_ptr() as *mut c_void, SIZE_PEB as u64, &mut i as *mut u64));
-		buf_peb.set_len(i as usize);
-		debug!("rvm peb {:x},{}/{}",status as u32,i,SIZE_PEB);
-		let peb_ptr:*const PEB = std::mem::transmute(buf_peb.as_ptr());
-		ldr_addr=(*peb_ptr).Ldr;
-	}
+	
 	let mut modlist_addr;
+	//This reads the LDR, and gets the Module list, in Load Order.
 	{
-		let mut i:u64 =0;
-		const SIZE_LDR:usize = std::mem::size_of::<PEB_LDR_DATA>();
-		let mut buf_ldr:Vec<u8> = Vec::with_capacity(SIZE_LDR);
-		let status = check_nt_status!(NtReadVirtualMemory(proc, ldr_addr as u64, buf_ldr.as_mut_ptr() as *mut c_void, SIZE_LDR as u64, &mut i as *mut u64));
-		buf_ldr.set_len(i as usize);
-		debug!("rvm ldr {:x},{}/{}",status as u32,i,SIZE_LDR);
-		let peb_ldr:*const PEB_LDR_DATA = std::mem::transmute(buf_ldr.as_ptr());
-		modlist_addr=(*peb_ldr).InLoadOrderModuleList;
+		modlist_addr = if pid_under_wow{
+			let size_ldr=std::mem::size_of::<PEB_LDR_DATA32>();
+			let ldr= read_virtual_mem::<PEB_LDR_DATA32>(proc, ldr_addr, size_ldr)?;
+			(*ldr).InLoadOrderModuleList.Flink as u64
+		}else {
+			let size_ldr=std::mem::size_of::<PEB_LDR_DATA>();
+			let ldr= read_virtual_mem::<PEB_LDR_DATA64>(proc, ldr_addr, size_ldr)?;
+			(*ldr).InLoadOrderModuleList.Flink as u64
+		};
+		debug!("Ldr InLoadOrderModuleList Address is {:x}",modlist_addr);
 	}
+	let first_modlist_addr=modlist_addr;
+	//This Loops through the Module list, until we have found our module, or we arrive, at the address, we started from.
 	loop{
-		let ldr_entry={
-			let mut i:u64 =0;
-			const SIZE_LDR_ENTRY:usize = std::mem::size_of::<LDR_DATA_TABLE_ENTRY>();
-			let mut buf_ldr_entry:Vec<u8> = Vec::with_capacity(SIZE_LDR_ENTRY);
-			trace!("trying to read {:x?}",modlist_addr.Flink);
-			let status = check_nt_status!(NtReadVirtualMemory(proc, modlist_addr.Flink as u64, buf_ldr_entry.as_mut_ptr() as *mut c_void, SIZE_LDR_ENTRY as u64, &mut i as *mut u64));
-			buf_ldr_entry.set_len(i as usize);
-			debug!("rvm ldr_data_table_entry {:x},{}/{}",status as u32,i,SIZE_LDR_ENTRY);
-			let ldr_entry_ptr:*const LDR_DATA_TABLE_ENTRY=std::mem::transmute(buf_ldr_entry.as_ptr());
-			*ldr_entry_ptr
+		let ldr_entry_data:*const u8;
+		{
+			let size_ldr_entry= if pid_under_wow{
+				std::mem::size_of::<LDR_DATA_TABLE_ENTRY32>()
+			}else{
+				std::mem::size_of::<LDR_DATA_TABLE_ENTRY64>()
+			};
+			ldr_entry_data = read_virtual_mem(proc, modlist_addr as u64, size_ldr_entry)?;
+			debug!("Read the LDR_DATA_Table {:x?} {} bytes",modlist_addr,size_ldr_entry);
 		};
 		{
-			let dll_win_string=ldr_entry.FullDllName;
-			let mut dll_path:Vec<u16>=Vec::with_capacity(dll_win_string.MaximumLength as usize);
-			let mut i:u64=0;
-			trace!("trying to read {:x?}",dll_win_string.Buffer);
-			let status = check_nt_status!(NtReadVirtualMemory(proc,dll_win_string.Buffer as u64,dll_path.as_mut_ptr() as *mut c_void,dll_win_string.MaximumLength as u64,&mut i as *mut u64));
-			dll_path.set_len(i as usize);
-			debug!("rvm dll_name {:x},{}/{}",status as u32,i,dll_win_string.MaximumLength);
-			match WideCStr::from_slice_with_nul(dll_path.as_slice()){
+			let dll_win_string_max_length;
+			let dll_win_string_buffer;
+			let ldr_entry_data_wrap;
+			if pid_under_wow{
+				let ldr_entry_ptr:*const LDR_DATA_TABLE_ENTRY32=std::mem::transmute(ldr_entry_data);
+				let ldr_entry=*ldr_entry_ptr;
+				ldr_entry_data_wrap=Wrap::T32(ldr_entry);
+				//Gather string data
+				dll_win_string_buffer=ldr_entry.FullDllName.Buffer as u64;
+				dll_win_string_max_length=ldr_entry.FullDllName.MaximumLength;
+				//In case we need, to check the next item.
+				modlist_addr=ldr_entry.InLoadOrderLinks.Flink as u64;
+			}else{
+				let ldr_entry_ptr:*const LDR_DATA_TABLE_ENTRY64=std::mem::transmute(ldr_entry_data);
+				let ldr_entry=*ldr_entry_ptr;
+				ldr_entry_data_wrap=Wrap::T64(ldr_entry);
+				//Gather string data
+				dll_win_string_buffer=ldr_entry.FullDllName.Buffer as u64;
+				dll_win_string_max_length=ldr_entry.FullDllName.MaximumLength;
+				//In case we need, to check the next item.
+				modlist_addr=ldr_entry.InLoadOrderLinks.Flink as u64
+			}
+			if modlist_addr==first_modlist_addr{
+				const RECURSION:&str = "We looped through the whole InLoadOrderModuleList, but still have no match. Aborting, because this would end in an endless loop.";
+				warn!("{}",RECURSION);
+				return Err((RECURSION.to_string(), 0));
+			}
+			
+			let dll_path_buf= read_virtual_mem_fn(proc, dll_win_string_buffer, (dll_win_string_max_length*2) as usize,move |v|v.leak() )?;
+			let dll_path:&mut [u16] = std::mem::transmute(dll_path_buf);
+			
+			match WideCStr::from_slice_with_nul(dll_path){
 				Ok(v) => {
 					match v.to_string(){
 						Ok(dll_name)=>{
 							debug!("dll_name is {}",dll_name);
 						},
 						Err(e)=>{
-							debug!("dll_name could not be printed. error is:{}, os_string is {:?}",e,dll_path.as_slice());
+							debug!("dll_name could not be printed. error is:{}, os_string is {:?}",e,dll_path);
 						}
 					}
 				},
 				Err(e) => {
-					debug!("dll_name could not be printed. error is:{}, os_string is {:?}",e,dll_path.as_slice());
+					debug!("dll_name could not be printed. error is:{}, os_string is {:?}",e,dll_path);
 				}
 			}
-			if let Some(val)=predicate(ldr_entry,dll_path){
+			if let Some(val)=predicate(ldr_entry_data_wrap, Vec::from(dll_path)){
 				return Ok(val);
-			}else{
-				modlist_addr=ldr_entry.InLoadOrderLinks;
 			}
 		}
 	}
 }
-
+///Gets the windows Error, prints it, and returns an error.
 fn err<T, E>(fn_name: E) -> Result<T>
 	where E: Display {
 	let err = unsafe { GetLastError() };
@@ -627,15 +704,130 @@ fn err<T, E>(fn_name: E) -> Result<T>
 	Err((fn_name.to_string(), err))
 }
 
+///Checks a NtStatus. Will return Some value, if it is a critical error.
+///Otherwise, it will log the status, and return None.
 fn check_nt_status(status:NTSTATUS)->Option<Error>{
 	if NT_ERROR(status){
-		error!("Received error type, from ntdll, during NtQueryInformationProcess. Status code is: {:x}",status);
+		error!("Received error type, from ntdll. Status code is: {:x}",status);
 		return Some(("ntdll".to_string(),status as u32))
 	}
 	if NT_WARNING(status){
-		warn!("Received warning type, from ntdll, during NtQueryInformationProcess. Status code is: {:x}",status);
+		warn!("Received warning type, from ntdll. Status code is: {:x}",status);
 	}
 	None
+}
+///See [read_virtual_mem_fn].
+unsafe fn read_virtual_mem<T>(proc:HANDLE, addr:u64, size:usize) ->Result<*mut T>{
+	read_virtual_mem_fn(proc,addr,size,move |mut v|std::mem::transmute(v.leak().as_mut_ptr()))
+}
+
+///This reads `size` bytes, of memory, from address `addr`, in the process `proc`
+///
+///# Safety
+///`proc` needs to have the PROCESS_VM_READ access rights.
+///`proc` needs to be valid
+///
+///`addr` need to be a valid address, in `proc` address space
+///`addr` need to be a address, which can be read from
+///`addr` needs to fulfill the above conditions for `size * std::mem::size_of::<T>()` bytes
+///
+/// T needs to be non zero sized.
+unsafe fn read_virtual_mem_fn<T>(proc:HANDLE, addr:u64, size:usize, f:impl FnOnce(Vec<u8>)->T) ->Result<T>
+{
+	//This is the prototype, of the NtReadVirtualMemory function
+	type FnNtReadVirtualMemory = fn (HANDLE, DWORD64, PVOID, ULONG64, PDWORD64) -> NTSTATUS;
+	static mut NT_READ_VIRTUAL_MEMORY_OPT:Option<FnNtReadVirtualMemory> = None;
+	let NtReadVirtualMemory=match NT_READ_VIRTUAL_MEMORY_OPT {
+		None=> {
+			let self_is_under_wow = get_proc_under_wow(GetCurrentProcess())?;
+			let rvm: &[u8] = if self_is_under_wow { b"NtWow64ReadVirtualMemory64\0" } else { b"NtReadVirtualMemory\0" };
+			let ntdll = LoadLibraryA(b"ntdll\0".as_ptr() as *const i8);
+			let proc= std::mem::transmute(check_ptr!(GetProcAddress(ntdll,rvm.as_ptr() as *const i8)));
+			NT_READ_VIRTUAL_MEMORY_OPT.insert(proc);
+			proc
+		},
+		Some(v)=>v,
+	};
+	let mut buf:Vec<u8> = Vec::with_capacity(size);
+	trace!("reading at address {:x?} {} bytes",addr,size);
+	let mut i:u64=0;
+	let status = check_nt_status!(NtReadVirtualMemory(proc, addr,buf.as_mut_ptr() as *mut c_void, size as u64, &mut i as *mut u64));
+	trace!("rvm {:x},{}/{}",status as u32,i,size);
+	//We read i bytes. So we let the Vec know, so it can calculate size and deallocate accordingly, if it wants.
+	//Also: This will enable debugger inspection, of the buf, since the debugger will now know, that the vec is initialised.
+	buf.set_len(i as usize);
+	Ok(f(buf))
+}
+///This reads `size` elements, of size T, of memory, from address `addr`, in the process `proc`, into `buf`.
+///
+///# Safety
+///`proc` needs to have the PROCESS_QUERY_INFORMATION (or PROCESS_QUERY_LIMITED_INFORMATION?) access rights.
+///`proc` needs to be valid
+///
+///`buf` needs to be a valid address, to a allocated object, which can hold `size` bytes.
+///
+///`pic` and the return type need to match up. Not doing so, might end in immediate program termination.
+///
+///# Termination
+///Windows might sometimes decide, to sometimes just end the entire program randomly, meaning, that this function won't return sometimes.
+///On other occasions, Windows will return some extraneous value of bytes read.
+///In those cases, this function will Panic.
+//todo: get this function to be stable
+//todo: why did user supplied buffers always crash?
+unsafe fn query_process_information<T>(proc:HANDLE,pic:PROCESSINFOCLASS) -> Result<T>
+where T:Copy
+{
+	//Function prototype, of the NtQueryInformationProcess function in ntdll.
+	type FnNtQueryInformationProcess = fn(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG) -> NTSTATUS;
+	//Get function
+	static mut NT_QUERY_INFORMATION_PROCESS_OPT:Option<FnNtQueryInformationProcess> =None;
+	let NtQueryInformationProcess = match NT_QUERY_INFORMATION_PROCESS_OPT{
+		None=>{
+			let ntdll = LoadLibraryA(b"ntdll\0".as_ptr() as *const i8);
+			let self_is_under_wow = get_proc_under_wow(GetCurrentProcess())?;
+			let qip:&[u8] = if self_is_under_wow{b"NtWow64QueryInformationProcess64\0"} else {b"NtQueryInformationProcess\0"};
+			trace!("self_is_under_wow={}",self_is_under_wow);
+			let proc_ptr = check_ptr!(GetProcAddress(ntdll,qip.as_ptr() as *const i8));
+			let proc = std::mem::transmute(proc_ptr);
+			trace!("proc is {:x}",proc_ptr as u64);
+			NT_QUERY_INFORMATION_PROCESS_OPT.insert(proc);
+			proc
+		},
+		Some(v)=>v,
+	};
+	//ready things, for function call
+	let mut i=0u32;
+	let i_ptr=&mut i as *mut u32;
+	let size_peb:usize = std::mem::size_of::<T>();
+	let mut buf:Vec<u8> = vec![0;size_peb];
+	//Call function
+	trace!("Running NtQueryInformationProcess with fnptr:{:x?} proc:{:x?},pic:{:x}. Size is {}/{}, buf is {:x?}",NtQueryInformationProcess as usize,proc,pic,size_peb,i, buf);
+	let status = check_nt_status!(NtQueryInformationProcess(proc,pic,buf.as_mut_ptr() as *mut c_void,size_peb as u32,i_ptr));
+	trace!("qip {:x},0x{:x}|0x{:x}/0x{:x} buf is {:?}",status as u32,i,i as u32,size_peb,buf);
+	if i as u64> size_peb as u64 || i as u64 == 0u64{
+		//This should never happen, unless I fucked something up.
+		panic!("Read more, than buf can handle, or read 0 bytes!
+I do not know, what corrupted, if something corrupted, or if windows reports arbitrary stuff.
+Memory might be fucked. Could be, that the function should just have errored. I DO NOT KNOW, what happened.
+
+Windows didn't yet freeze or kill our program. This might mean, that this is recoverable?
+
+Report IMMEDIATELY.
+		");
+	}
+	//This should be safe, since the vec has as many bytes, as T
+	let pbi_ptr:*mut T = std::mem::transmute(buf.as_mut_ptr());
+	// trace!("exitstatus:{:x},pebaddress:{:x},baseprio:{:x},upid:{:x},irupid:{:x}",pbi.ExitStatus,pbi.PebBaseAddress,pbi.BasePriority,pbi.UniqueProcessId,pbi.InheritedFromUniqueProcessId);
+	Ok(*pbi_ptr)
+}
+///This creates len bytes of unmapped memory
+fn exec_ptr(len:usize) -> Result<LPVOID> {
+	Ok(check_ptr!(VirtualAlloc(
+		std::ptr::null_mut(),
+		len,
+		MEM_COMMIT|MEM_RESERVE,
+		PAGE_EXECUTE_READWRITE
+	)))
 }
 
 ///NOP function.

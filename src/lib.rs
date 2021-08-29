@@ -1,4 +1,4 @@
-use log::{debug,error,warn};
+use log::{debug,error,warn, trace};
 use std::fmt::Display;
 
 pub struct Injector<'a> {
@@ -9,7 +9,7 @@ pub struct Injector<'a> {
 type Error = (String,u32);
 type Result<T> = std::result::Result<T,Error>;
 
-#[doc(hidden)]
+///Calls a closure
 fn __call__<T,R>(arg:T,f:impl FnOnce(T)->R)->R{
     f(arg)
 }
@@ -106,9 +106,10 @@ pub fn strip_win_path(str:&str)->&str{
         //This gets rid of the /
         str_no_path =str.get((n+1)..).unwrap();
     }
-    debug!("str='{}' and truncated='{}'", str, str_no_path);
+    trace!("str='{}' and truncated='{}'", str, str_no_path);
     str_no_path
 }
 
+mod hof;
 #[macro_use]
 mod platforms;
