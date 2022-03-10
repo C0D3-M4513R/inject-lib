@@ -2,9 +2,7 @@
 This library(will later be a crate) exists, to inject a dll into a windows process.
 This injector currently supports, injecting from x64 into x86 and x64, and injecting from x86 into x86.
 
-Inejecting from x86 into x64 is not supported, since I currently use `CreateToolhelp32Snapshot`.
-More infos [here](https://docs.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot).
-
+Inejecting from x86 into x64 is theoretically possible. I am just too dumb, to call a function in assembly.
 # Todos:
 
 - Find a good name
