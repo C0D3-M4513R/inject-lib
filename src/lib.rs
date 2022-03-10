@@ -1,44 +1,22 @@
+// #![cfg_attr(feature = "nightly", feature(asm,global_asm, asm_const))]
+
 use log::{debug,error,warn, trace};
-use std::fmt::Display;
+
+
 
 pub struct Injector<'a> {
     pub dll: &'a str,
     pub pid: u32,
 }
 
-type Error = (String,u32);
-type Result<T> = std::result::Result<T,Error>;
+mod macros;
+pub(crate) type Error = (String,u32);
+pub(crate) type Result<T> = std::result::Result<T,Error>;
 
-///Calls a closure
-fn __call__<T,R>(arg:T,f:impl FnOnce(T)->R)->R{
-    f(arg)
-}
+mod hof;
 
+mod platforms;
 
-macro_rules! check_ptr {
-    ($name:ident($($args:expr),*),$predicate:expr)=>{
-        {
-            let _tmp = unsafe{$name($($args),*)};
-            if $crate::__call__(_tmp,$predicate){
-                return err(std::stringify!($name));
-            } else{
-               _tmp
-            }
-        }
-    };
-    ($name:ident($($args:expr),*))=>{
-        check_ptr!($name($($args),*),|v|v.is_null())
-    };
-}
-
-macro_rules! result {
-	($res:expr) => {
-		match $res{
-			Ok(v)=>v,
-			Err(e)=>{return $crate::err_str(e);},
-		}
-	};
-}
 
 impl<'a> Injector<'a> {
     pub fn new(dll: &'a str, pid: u32) -> Self {
@@ -72,12 +50,6 @@ impl<'a> Injector<'a> {
     }
 }
 
-pub(crate) fn err_str<T,E>(err:E) -> Result<T>
-where E:Display {
-    error!("{}",err);
-    Err((format!("{}",err),0))
-}
-
 impl<'a> Default for Injector<'a> {
     fn default() -> Self {
         Self::new("", 0)
@@ -109,7 +81,3 @@ pub fn strip_win_path(str:&str)->&str{
     trace!("str='{}' and truncated='{}'", str, str_no_path);
     str_no_path
 }
-
-mod hof;
-#[macro_use]
-mod platforms;

@@ -5,6 +5,7 @@ use winapi::STRUCT;
 use winapi::um::winnt::{ULARGE_INTEGER, LARGE_INTEGER, LIST_ENTRY64, FLS_MAXIMUM_AVAILABLE, ULONGLONG, PVOID64, HANDLE};
 use ntapi::ntpsapi::GDI_HANDLE_BUFFER64;
 use ntapi::ntldr::LDR_DLL_LOAD_REASON;
+use winapi::shared::minwindef::BOOL;
 
 
 macro_rules! UNION {
@@ -191,3 +192,18 @@ STRUCT!{struct LDR_DATA_TABLE_ENTRY64 {
     DependentLoadFlags: ULONG,
     SigningLevel: UCHAR,
 }}
+
+#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Default)]
+#[repr(packed, C)]
+pub(crate) struct rtl_create_thread_param{
+    pub ProcessHandle:u64,//ptr
+    pub SecurityDescriptor:u64,//ptr
+    pub CreateSuspended:BOOL,
+    pub StackZeroBits:ULONG,
+    pub StackReserved:u64,//ptr
+    pub StackCommit:u64,//ptr
+    pub StartAddress:u64,//ptr
+    pub StartParameter:u64,//ptr
+    pub ThreadHandle:u64,//ptr
+    pub ClientID:u64,//ptr
+}
