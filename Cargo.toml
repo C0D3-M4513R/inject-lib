@@ -42,6 +42,7 @@ features=[
 version = "0.3"#Types
 optional=true
 
+#todo: use less libraries
 [dependencies]
 widestring = "0.4"#win apis like to return WIDE strings
 pelite = "0.9" #to read dll information.
@@ -59,4 +60,3 @@ default=[]
 nightly=[]
 ntdll=["ntapi"]
 x86tox64=["ntdll","nightly"]
-experimental=[]

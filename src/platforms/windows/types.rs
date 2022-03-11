@@ -1,3 +1,4 @@
+#![allow(non_snake_case)]//Windows structs do not follow rust convention. Ignore warnings about names.
 use winapi::shared::ntdef::{NTSTATUS, BOOLEAN, ULONG, USHORT, CHAR, UNICODE_STRING64, UCHAR};
 use winapi::shared::basetsd::ULONG64;
 use ntapi::ntapi_base::KPRIORITY;
@@ -192,18 +193,3 @@ STRUCT!{struct LDR_DATA_TABLE_ENTRY64 {
     DependentLoadFlags: ULONG,
     SigningLevel: UCHAR,
 }}
-
-#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Default)]
-#[repr(packed, C)]
-pub(crate) struct rtl_create_thread_param{
-    pub ProcessHandle:u64,//ptr
-    pub SecurityDescriptor:u64,//ptr
-    pub CreateSuspended:BOOL,
-    pub StackZeroBits:ULONG,
-    pub StackReserved:u64,//ptr
-    pub StackCommit:u64,//ptr
-    pub StartAddress:u64,//ptr
-    pub StartParameter:u64,//ptr
-    pub ThreadHandle:u64,//ptr
-    pub ClientID:u64,//ptr
-}
