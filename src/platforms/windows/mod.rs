@@ -1,6 +1,7 @@
 #![cfg(target_os = "windows")]
 mod macros;
 
+use std::cell::Cell;
 use crate::{Injector, strip_rust_path, Result, strip_win_path, Error};
 use crate::macros::{result,err_str};
 use macros::{check_nt_status,check_ptr};
@@ -21,8 +22,8 @@ use winapi::um::synchapi::WaitForSingleObject;
 use winapi::um::winbase::{INFINITE};
 use winapi::um::sysinfoapi::{SYSTEM_INFO, GetNativeSystemInfo, GetSystemWindowsDirectoryA};
 use std::fmt::{Display, Debug};
-use std::ops::{Add, Deref};
-use std::os::windows::ffi::OsStrExt;
+use std::ops::{Add, Deref, Shl, Shr};
+use std::os::windows::ffi::{OsStrExt,OsStringExt};
 use std::path::PathBuf;
 use std::ptr::{null, null_mut};
 use pelite::{Pod, Wrap};
@@ -34,6 +35,7 @@ mod types;//These are exclusively ntdll types
 
 mod mem;
 mod process;
+mod thread;
 
 use std::thread::{yield_now, sleep};
 //todo: are these imports gateable?
@@ -43,18 +45,10 @@ use ntapi::ntrtl::{PUSER_THREAD_START_ROUTINE, RtlCreateUserThread};
 
 use once_cell::sync::OnceCell;
 use pelite::Align::File;
+use pelite::Wrap::T32;
 use crate::platforms::platform::macros::{err, void_res};
 use crate::platforms::platform::mem::MemPage;
 use crate::platforms::platform::process::Process;
-
-macro_rules! guard_check_ptr {
-    ($name:ident($($args:expr),*),$guard:literal) => {
-        macros::guard_check_ptr!($name($($args),*),$guard)
-    };
-    ($name:ident($($args:expr),*),$guard:expr) => {
-        macros::guard_check_ptr!($name($($args),*),$guard)
-    };
-}
 
 impl<'a> Injector<'a> {
 	//todo: use the structs
@@ -71,11 +65,8 @@ impl<'a> Injector<'a> {
 		info!("Found dll in proc, at addr:{:#x?}",addr);
 		//Spawn the thread, that ejects the dll
 		{
-			let proc = guard_check_ptr!(
-                OpenProcess(
-                PROCESS_CREATE_THREAD | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION,
-                FALSE,self.pid),"Process");
-			debug!("Process Handle is {:?}",*proc);
+			let proc = process::Process::new(self.pid,PROCESS_CREATE_THREAD | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION)?;
+			debug!("Process Handle is {:?}",proc.get_proc());
 			
 			let thread_start = {
 				//try to get the LoadLibraryA function direct from the target executable.
@@ -99,17 +90,19 @@ impl<'a> Injector<'a> {
 			
 			
 			let mut thread_id: u32 = 0;
-			let thread = guard_check_ptr!(
-                        CreateRemoteThread(
-                            *proc,
-                            std::ptr::null_mut(),
-                            0,
-                            Some(std::mem::transmute(thread_start)),
-                            addr as *mut c_void,
-                            0,
-                            // *ptr_attr_list,
-                            &mut thread_id as *mut u32
-                        ),"thread");
+			let thread = unsafe{
+				thread::Thread::new(
+					CreateRemoteThread(
+						proc.get_proc(),
+						std::ptr::null_mut(),
+						0,
+						Some(std::mem::transmute(thread_start)),
+						addr as *mut c_void,
+						0,
+						// *ptr_attr_list,
+						&mut thread_id as *mut u32
+					))
+			}?;
 			let thread_id = thread_id;
 			trace!("Thread is {:?} and thread id is {}", *thread, thread_id);
 			debug!("Waiting for DLL to eject");
@@ -180,7 +173,12 @@ impl<'a> Injector<'a> {
 		
 		info!("pid_is_under_wow:{},self_is_under_wow:{}",pid_is_under_wow,self_is_under_wow);
 		if self_is_under_wow && !pid_is_under_wow {
-			info!("This injection will use a slightly different method, than usually. This is normal, when the injector is x86, but the pid specified is a x64 process.");
+			if cfg!(feature = "ntdll") {
+				warn!("This injection will use a slightly different method, than usually. This is normal, when the injector is x86, but the pid specified is a x64 process.\
+				We will be using ntdll methods. The ntdll.dll is technically not a public facing windows api.");
+			} else {
+				return err_str("Cannot continue injection. You are trying to inject from a x86 injector into a x64 application. That is unsupportable, without access to ntdll functions.");
+			}
 		};
 		
 		let dll_is_x64 = self.get_is_dll_x64()?;
@@ -209,77 +207,10 @@ impl<'a> Injector<'a> {
 		
 		//todo: add other paths, if bitness of injector == bitness of dll == bitness of target?
 		//todo: That could lead to better performance.
-		let entry_point = {
-			let (k32path, k32addr) = {
-				type Return=(String,u64);
-				///Takes a Selector, and returns a type, for use with get_module_in_proc and get_module_in_pid
-				//todo: does this bring a performance benefit?
-				#[inline]
-				fn predicate<T>(f: impl Fn(T) -> u64) -> impl Fn(T,Vec<u16>) -> Option<Return> {
-					crate::hof::swap_fn_args(crate::hof::optpredicate(|v|converter(v,|s|strip_win_path(s.as_str())=="KERNEL32.DLL"),move|s:String,i2|(s,f(i2))))
-				}
-				
-				let selector_pid = |m:&MODULEENTRY32W|m.modBaseAddr as u64;
-				///Runs get_module_in_proc, with the supplied error handler.
-				#[cfg(feature = "ntdll")]
-				fn run_get_module_in_proc(proc:&Process,f:impl Fn(Error)->Result<Return>) -> Result<Return>{
-					let selector_proc =|e:Wrap<ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32, types::LDR_DATA_TABLE_ENTRY64>|
-						match e {
-							Wrap::T32(v)=>v.DllBase as u64,
-							Wrap::T64(v)=>v.DllBase as u64,
-						};
-					match unsafe{ get_module_in_proc(proc, predicate(selector_proc))} {
-						Err(e)=>f(e),
-						Ok(v)=>Ok(v),
-					}
-				}
-				if !self_is_under_wow||pid_is_under_wow{
-					match get_module_in_pid(self.pid,
-                                   |m|predicate(selector_pid)(m,m.szExePath.to_vec()),
-                                   None
-					){
-						Ok(r)=>r,
-						Err((s,n))=>{
-							warn!("get_module_in_pid_predicate_selector failed, with str:{}, n:{}.",s,n);
-							#[cfg(feature = "ntdll")]
-							{
-								info!("Trying get_module_in_proc as fallback method.");
-								run_get_module_in_proc(&proc,|(s,n)|{
-									error!("get_module_in_proc failed also, as a fallback. Is something fundamentally wrong? Is the process handle valid? str:{},n:{}",s,n);
-									Err((s,n))
-								})?
-							}
-						}
-					}
-				} else {
-					#[cfg(feature = "ntdll")]
-					{
-						run_get_module_in_proc(&proc,|(s,n)|{
-							error!("Could not try get_module_in_pid first. We are a x86 injector, and injecting into a x64 process. Error details: str:{} n:{}",s,n);
-							Err((s,n))
-						})?
-					}
-				}
-			};
-			//We need to replace System32, by Sysnative, in case we are running under WOW, because Windows will otherwise redirect all our file access.
-			
-			//One can also use the following methods: https://docs.microsoft.com/en-us/windows/win32/api/wow64apiset/nf-wow64apiset-wow64disablewow64fsredirection,https://docs.microsoft.com/en-us/windows/win32/api/wow64apiset/nf-wow64apiset-wow64revertwow64fsredirection
-			//I am not using those methods, because that WILL have impacts, if those functions fail.
-			//On failing to re-enable Filesystem redirection, I'd have to panic, since a x86 program, using this library, might do unwanted things.
-			//todo: to function
-			let k32path = if self_is_under_wow{
-				let str = get_windir()?.clone();
-				k32path.replace(&(str.clone() + &"\\System32".to_string()),&(str + &"\\Sysnative".to_string()))
-			}else{
-				k32path
-			};
-			info!("parsing {}|{}",k32path, result!(std::fs::canonicalize(&k32path)).to_string_lossy());
-			let k32 = result!(std::fs::read(&k32path));
-			
-			let dll_parsed = result!(pelite::PeFile::from_bytes(k32.as_slice()));
-			let lla = result!(dll_parsed.get_export_by_name("LoadLibraryW")).symbol().unwrap();
-			info!("LoadLibraryW is {:x}. Kernel32.dll is at:{:x}. That will be our entry point.",lla,k32addr);
-			k32addr+lla as u64
+		
+		let entry_point={
+			let (path,base) = get_module("KERNEL32.DLL",&proc)?;
+			base+get_dll_export("LoadLibraryW",path)? as u64
 		};
 	
 		//Prepare Argument for LoadLibraryA
@@ -363,7 +294,7 @@ impl<'a> Injector<'a> {
 		}
 		if !self_is_under_wow||pid_is_under_wow {
 			let mut thread_id:u32=0;
-			let thread = guard_check_ptr!(
+			let thread = unsafe{thread::Thread::new(
 			    CreateRemoteThread(
 			        proc.get_proc(),
 			        std::ptr::null_mut(),
@@ -372,7 +303,7 @@ impl<'a> Injector<'a> {
 			        mem.get_address(),
 			        0,
 			        &mut thread_id as *mut u32
-			    ),"thread");
+			    ))}?;
 			let thread_id = thread_id;
 			trace!("Thread is {:?} and thread id is {}", *thread, thread_id);
 			info!("Waiting for DLL");
@@ -596,12 +527,10 @@ where F:Fn(Wrap<ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32,types::LDR_DATA_TABLE_ENT
 		type PEB32=ntapi::ntwow64::PEB32;
 		type PEB64=types::PEB64;
 		ldr_addr = if false&&pid_under_wow{
-			let size_peb=std::mem::size_of::<PEB32>();
-			let peb=read_virtual_mem::<PEB32>(proc.get_proc(), peb_addr, size_peb)?;
+			let peb=read_virtual_mem::<PEB32>(proc.get_proc(), peb_addr)?;
 			(*peb).Ldr as u64
 		}else{
-			let size_peb=std::mem::size_of::<PEB64>();
-			let peb = read_virtual_mem::<PEB64>(proc.get_proc(), peb_addr, size_peb)?;
+			let peb = read_virtual_mem::<PEB64>(proc.get_proc(), peb_addr)?;
 			(*peb).Ldr as u64
 		};
 		debug!("Ldr Address is {:x}.",ldr_addr);
@@ -615,12 +544,10 @@ where F:Fn(Wrap<ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32,types::LDR_DATA_TABLE_ENT
 		#[allow(non_camel_case_types)]
 		type PEB_LDR_DATA64=types::PEB_LDR_DATA64;
 		modlist_addr = if false&&pid_under_wow{
-			let size_ldr=std::mem::size_of::<PEB_LDR_DATA32>();
-			let ldr= read_virtual_mem::<PEB_LDR_DATA32>(proc.get_proc(), ldr_addr, size_ldr)?;
+			let ldr= read_virtual_mem::<PEB_LDR_DATA32>(proc.get_proc(), ldr_addr)?;
 			(*ldr).InLoadOrderModuleList.Flink as u64
 		}else {
-			let size_ldr=std::mem::size_of::<PEB_LDR_DATA64>();
-			let ldr= read_virtual_mem::<PEB_LDR_DATA64>(proc.get_proc(), ldr_addr, size_ldr)?;
+			let ldr= read_virtual_mem::<PEB_LDR_DATA64>(proc.get_proc(), ldr_addr)?;
 			(*ldr).InLoadOrderModuleList.Flink as u64
 		};
 		debug!("Ldr InLoadOrderModuleList Address is {:x}",modlist_addr);
@@ -632,64 +559,59 @@ where F:Fn(Wrap<ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32,types::LDR_DATA_TABLE_ENT
 		type LDR_DATA_TABLE_ENTRY32=ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
 		#[allow(non_camel_case_types)]
 		type LDR_DATA_TABLE_ENTRY64=types::LDR_DATA_TABLE_ENTRY64;
-		let ldr_entry_data:*const u8;
+		let ldr_entry_data:Wrap<LDR_DATA_TABLE_ENTRY32,LDR_DATA_TABLE_ENTRY64>;
+		if false&pid_under_wow{
+			let entry=read_virtual_mem(proc.get_proc(), modlist_addr as u64)?;
+			debug!("Read the LDR_DATA_Table {:#?}",entry);
+			ldr_entry_data = Wrap::T32(*entry);
+		}else{
+			let entry=read_virtual_mem(proc.get_proc(), modlist_addr as u64)?;
+			debug!("Read the LDR_DATA_Table {:#?}",entry);
+			ldr_entry_data = Wrap::T64(*entry);
+		}
 		{
-			let size_ldr_entry= if false&&pid_under_wow{
-				std::mem::size_of::<LDR_DATA_TABLE_ENTRY32>()
-			}else{
-				std::mem::size_of::<LDR_DATA_TABLE_ENTRY64>()
-			};
-			ldr_entry_data = read_virtual_mem(proc.get_proc(), modlist_addr as u64, size_ldr_entry)?;
-			debug!("Read the LDR_DATA_Table {:x?} {} bytes",modlist_addr,size_ldr_entry);
-		};
-		{
-			let dll_win_string_max_length;
+			let dll_win_string_length;
 			let dll_win_string_buffer;
-			let ldr_entry_data_wrap;
-			if false&&pid_under_wow{
-				let ldr_entry_ptr:*const LDR_DATA_TABLE_ENTRY32=std::mem::transmute(ldr_entry_data);
-				let ldr_entry=*ldr_entry_ptr;
-				ldr_entry_data_wrap=Wrap::T32(ldr_entry);
-				//Gather string data
-				dll_win_string_buffer=ldr_entry.FullDllName.Buffer as u64;
-				dll_win_string_max_length=ldr_entry.FullDllName.MaximumLength;
-				//In case we need, to check the next item.
-				modlist_addr=ldr_entry.InLoadOrderLinks.Flink as u64;
-			}else{
-				let ldr_entry_ptr:*const LDR_DATA_TABLE_ENTRY64=std::mem::transmute(ldr_entry_data);
-				let ldr_entry=*ldr_entry_ptr;
-				ldr_entry_data_wrap=Wrap::T64(ldr_entry);
-				//Gather string data
-				dll_win_string_buffer=ldr_entry.FullDllName.Buffer as u64;
-				dll_win_string_max_length=ldr_entry.FullDllName.MaximumLength;
-				//In case we need, to check the next item.
-				modlist_addr=ldr_entry.InLoadOrderLinks.Flink as u64
-			}
+			match ldr_entry_data {
+				Wrap::T32(ldr_entry)=>{
+					//Gather string data
+					dll_win_string_buffer=ldr_entry.FullDllName.Buffer as u64;
+					dll_win_string_length =ldr_entry.FullDllName.Length;
+					//In case we need, to check the next item.
+					modlist_addr=ldr_entry.InLoadOrderLinks.Flink as u64;
+				},
+				Wrap::T64(ldr_entry)=>{
+					//Gather string data
+					dll_win_string_buffer=ldr_entry.FullDllName.Buffer as u64;
+					dll_win_string_length =ldr_entry.FullDllName.Length;
+					//In case we need, to check the next item.
+					modlist_addr=ldr_entry.InLoadOrderLinks.Flink as u64
+				},
+			};
 			if modlist_addr==first_modlist_addr{
 				const RECURSION:&str = "We looped through the whole InLoadOrderModuleList, but still have no match. Aborting, because this would end in an endless loop.";
 				warn!("{}",RECURSION);
 				return Err((RECURSION.to_string(), 0));
 			}
 			
-			let dll_path_buf= read_virtual_mem_fn(proc.get_proc(), dll_win_string_buffer, (dll_win_string_max_length*2) as usize,move |v|v.leak() )?;
-			let dll_path:&mut [u16] = std::mem::transmute(dll_path_buf);
+			let dll_path_buf= read_virtual_mem_fn(proc.get_proc(), dll_win_string_buffer, (dll_win_string_length) as usize)?;
+			let dll_path_old=dll_path_buf.as_slice();
+			let mut dll_path = Vec::with_capacity(((dll_win_string_length>>1)+1) as usize);
+			let mut i = 0;
+			while i< dll_path_buf.len()>>1{
+				dll_path.push((dll_path_old[2*i+1] as u16).shl(8)|dll_path_old[2*i] as u16);
+				i+=1;
+			}
 			
-			match WideCStr::from_slice_with_nul(dll_path){
-				Ok(v) => {
-					match v.to_string(){
-						Ok(dll_name)=>{
-							debug!("dll_name is {}",dll_name);
-						},
-						Err(e)=>{
-							debug!("dll_name could not be printed. error is:{}, os_string is {:?}",e,dll_path);
-						}
-					}
+			match crate::str_from_wide_str(dll_path.as_slice()){
+				Ok(v)=>{
+					debug!("dll_name is {}",v);
 				},
 				Err(e) => {
-					debug!("dll_name could not be printed. error is:{}, os_string is {:?}",e,dll_path);
+					debug!("dll_name could not be printed. os_string is {:?}",e);
 				}
 			}
-			if let Some(val)=predicate(ldr_entry_data_wrap, Vec::from(dll_path)){
+			if let Some(val)=predicate(ldr_entry_data, dll_path){
 				return Ok(val);
 			}
 		}
@@ -710,8 +632,9 @@ fn check_nt_status(status:NTSTATUS)->Option<Error>{
 }
 ///See [read_virtual_mem_fn].
 #[cfg(feature = "ntdll")]
-unsafe fn read_virtual_mem<T>(proc:HANDLE, addr:u64, size:usize) ->Result<*mut T>{
-	read_virtual_mem_fn(proc,addr,size,move |mut v|std::mem::transmute(v.leak().as_mut_ptr()))
+unsafe fn read_virtual_mem<T>(proc:HANDLE, addr:u64) ->Result<*mut T>{
+	let v = read_virtual_mem_fn(proc,addr,size_of::<T>())?;
+	Ok(v.leak().as_mut_ptr() as *mut T)
 }
 
 ///This reads `size` bytes, of memory, from address `addr`, in the process `proc`
@@ -727,10 +650,11 @@ unsafe fn read_virtual_mem<T>(proc:HANDLE, addr:u64, size:usize) ->Result<*mut T
 /// T needs to be non zero sized.
 ///
 #[cfg(feature = "ntdll")]
-unsafe fn read_virtual_mem_fn<T>(proc:HANDLE, addr:u64, size:usize, f:impl FnOnce(Vec<u8>)->T) ->Result<T>
+unsafe fn read_virtual_mem_fn(proc:HANDLE, addr:u64, size:usize) ->Result<Vec<u8>>
 {
 	//This is the prototype, of the NtReadVirtualMemory function
 	type FnNtReadVirtualMemory = fn (HANDLE, DWORD64, PVOID, ULONG64, PDWORD64) -> NTSTATUS;
+	//todo: use once cell, or make a struct, for ntdll.
 	static mut NT_READ_VIRTUAL_MEMORY_OPT:Option<FnNtReadVirtualMemory> = None;
 	// let NtReadVirtualMemory=match NT_READ_VIRTUAL_MEMORY_OPT {
 	// 	None=> {
@@ -759,7 +683,7 @@ unsafe fn read_virtual_mem_fn<T>(proc:HANDLE, addr:u64, size:usize, f:impl FnOnc
 	//We read i bytes. So we let the Vec know, so it can calculate size and deallocate accordingly, if it wants.
 	//Also: This will enable debugger inspection, of the buf, since the debugger will now know, that the vec is initialised.
 	buf.set_len(i as usize);
-	Ok(f(buf))
+	Ok(buf)
 }
 ///This reads `size` elements, of size T, of memory, from address `addr`, in the process `proc`, into `buf`.
 ///
@@ -775,8 +699,6 @@ unsafe fn read_virtual_mem_fn<T>(proc:HANDLE, addr:u64, size:usize, f:impl FnOnc
 ///Windows might sometimes decide, to sometimes just end the entire program randomly, meaning, that this function won't return sometimes.
 ///On other occasions, Windows will return some extraneous value of bytes read.
 ///In those cases, this function will Panic.
-//todo: get this function to be stable
-//todo: why did user supplied buffers always crash?
 #[cfg(feature = "ntdll")]
 unsafe fn query_process_information<T>(proc:HANDLE,pic:ntapi::ntpsapi::PROCESSINFOCLASS) -> Result<T>
 where T:Copy
@@ -840,21 +762,20 @@ fn get_windir<'a>() -> Result<&'a String> {
 	debug!("Windir is '{}'",str);
 	Ok(str)
 }
-///Compares
-//todo: what does this do again?
-fn converter(v:Vec<u16>,compare:impl Fn(&String)->bool) -> Option<String>
+///Converts v to a String, and compares it using compare.
+///Will return the string, if compare returned true, for that string.
+//todo: could we remove this?
+fn converter(compare:impl Fn(&String)->bool) -> impl Fn(Vec<u16>) -> Option<String>
 {
-	let dll_name = match match WideCStr::from_slice_with_nul(v.as_slice()){
-		Ok(s)=>s.to_string(),
-		Err(e)=>{warn!("Couldn't convert full dll path, to string. Will skip this dll, in assumption, that this dll is invalid. Error is {}. Buf is {:x?}.",e,v); return None;}
-	}{
-		Ok(string)=>string,
-		Err(e)=>{warn!("Couldn't convert full dll path, to string. Will skip this dll, in assumption, that this dll is invalid. Error is {}. Buf is {:x?}.",e,v); return None;}
-	};
-	if compare(&dll_name) {
-		return Some(dll_name);
+	move |v| {
+		crate::str_from_wide_str(v.as_slice())
+			.map_or_else(
+				|e| {
+					warn!("Couldn't convert full dll path, to string. Will skip this dll, in assumption, that this dll is invalid. The Buffer contained invalid non-UTF-8 characters . Buf is {:#?}.", e);
+					None
+				}, |s| if compare(&s) { Some(s) } else { None },
+			)
 	}
-	return None;
 }
 
 
@@ -877,9 +798,9 @@ fn get_ntdll_base_addr(explicit_x86:bool, proc:&Process) ->Result<(String, u64)>
 				Wrap::T64(v)=>v.DllBase as u64,
 			};
 			//This selects only the ntdll.dll entries.
-			let str = converter(v,|s| {
+			let str = converter(|s| {
 				println!("{},{:x}", s.to_lowercase(), base);
-				s.to_lowercase()==ntdll});
+				s.to_lowercase()==ntdll})(v);
 			str.map(|s|(s, base))
 		}
 	)}?)
@@ -917,5 +838,80 @@ fn get_ntdll_function(path:String, name:String) ->Result<u32>{
 	trace!("Parsed dll file!");
 	let rva=result!(dll_parsed.get_export_by_name(&name)).symbol().unwrap();
 	trace!("Got RTLCreateUserThread export at {}",rva);
+	Ok(rva)
+}
+///Takes in a Name. From that it returns a matcher
+///Takes a Selector, and returns a type, for use with get_module_in_proc and get_module_in_pid
+//todo: does this bring a performance benefit?
+fn predicate<'a,T:'a,F:'a>(name:&'a str, f: T) -> impl Fn(F,Vec<u16>) -> Option<(String,u64)>+'a
+where T:Fn(F) -> u64
+{
+	crate::hof::swap_fn_args(
+		crate::hof::optpredicate(
+			converter(move|s|strip_win_path(s.as_str())==name),
+			move|s, i2|(s,f(i2))
+		)
+	)
+}
+///Runs get_module_in_proc
+///For safety go to [get_module_in_proc]
+///
+///proc: A Process (handle)
+///predicate: when true is seen, selector is invoked
+///selector: The selector returns the desired information
+#[cfg(feature = "ntdll")]
+unsafe fn run_get_module_in_proc<S,P,E,R>(proc:&Process, selector:S, predicate: P) -> Result<R>
+where S:Fn(Wrap<ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32, types::LDR_DATA_TABLE_ENTRY64>,&Vec<u16>) -> R,
+      P:Fn(&Vec<u16>)->bool,
+      E:Fn(Error)->Result<R>
+{
+	unsafe {
+		get_module_in_proc(proc,
+		                   |w, v|
+			                   if predicate(&v) { Some(selector(w, &v)) } else { None })
+	}
+}
+
+fn get_module(name:&str,proc:&Process)->Result<(String,u64)>{
+
+	if !*process::Process::self_proc().is_under_wow()?||*proc.is_under_wow()?{
+		match get_module_in_pid(proc.get_pid(),
+		                        |m|predicate(name,|m:&MODULEENTRY32W|m.modBaseAddr as u64)(m,m.szExePath.to_vec()),
+		                        None
+		){
+			Ok(r)=>return Ok(r),
+			Err((s,n))=>{
+				warn!("get_module_in_pid_predicate_selector failed, with str:{}, n:{}.",s,n);
+			}
+		}
+	} else {
+		warn!("We are injecting from a x86 injector into a x64 target executable. ")
+	}
+	#[cfg(feature = "ntdll")]
+	{
+		info!("Trying get_module_in_proc as fallback method.");
+		unsafe {
+			return get_module_in_proc(proc,predicate(name,|w:Wrap<ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32,types::LDR_DATA_TABLE_ENTRY64>|
+			match w {
+				Wrap::T32(v)=>v.DllBase as u64,
+				Wrap::T64(v)=>v.DllBase as u64,
+			}));
+		}
+	}
+}
+///Gets a function export from the dll at the specified path (even under WOW), and return the rva, if found.
+fn get_dll_export(name:&str,path:String)->Result<u32>{
+	let mut path=path;
+	let path = if *process::Process::self_proc().is_under_wow()?{
+		let str = get_windir()?.clone();
+		path.replace(&(str.clone() + &"\\System32".to_string()),&(str + &"\\Sysnative".to_string()))
+	}else{
+		path
+	};
+	debug!("parsing {}|{}",path, result!(std::fs::canonicalize(&path)).to_string_lossy());
+	let k32 = result!(std::fs::read(&path));
+	let dll_parsed = result!(pelite::PeFile::from_bytes(k32.as_slice()));
+	let rva = result!(dll_parsed.get_export_by_name(name)).symbol().unwrap();
+	trace!("Found {} at rva:{} in dll {}",name,rva,path);
 	Ok(rva)
 }

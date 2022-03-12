@@ -15,18 +15,20 @@ use crate::macros::err_str;
 pub struct Process{
 	//I save this as usize rather than Handle, because usize is sync.
 	proc:usize,
+	pid:u32,
 	perms:DWORD,
 	wow:OnceCell<bool>,
 }
 impl Process{
 	pub fn new(pid:u32, perms:DWORD) ->Result<Self>{
 		let proc=check_ptr!(OpenProcess(perms, FALSE,pid));
-		Ok(Self{proc:proc as usize,perms, wow: Default::default() })
+		Ok(Self{proc:proc as usize,pid,perms, wow: Default::default() })
 	}
 	pub fn self_proc()->&'static Self{
 		static PRC:OnceCell<Process>=OnceCell::new();
 		PRC.get_or_init(||Process{
 			proc:unsafe{GetCurrentProcess() as usize},
+			pid:std::process::id(),
 			perms:PROCESS_ALL_ACCESS,
 			wow: Default::default()
 		})
@@ -67,6 +69,7 @@ impl Process{
 		}
 	}
 	pub fn get_proc(&self)->HANDLE{self.proc as HANDLE}
+	pub fn get_pid(&self)->u32{self.pid}
 }
 
 impl Drop for Process{
