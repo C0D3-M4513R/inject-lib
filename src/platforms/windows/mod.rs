@@ -9,7 +9,6 @@ use macros::{check_nt_status,check_ptr};
 
 use log::{debug, error, info, trace, warn};
 use std::mem::size_of;
-use widestring::{WideCString, WideCStr};
 use winapi::shared::minwindef::{DWORD, FALSE, MAX_PATH, LPVOID};
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
 use winapi::um::libloaderapi::{GetProcAddress, LoadLibraryA, GetModuleHandleA, FreeLibrary, LOAD_LIBRARY_AS_DATAFILE, LOAD_LIBRARY_AS_IMAGE_RESOURCE, DONT_RESOLVE_DLL_REFERENCES};
@@ -75,10 +74,7 @@ impl<'a> Injector<'a> {
 				                                                              |m| (m.szExePath, m.modBaseAddr),
 				                                                              None
 				)?;
-				let str = match WideCStr::from_slice_with_nul(&k32path) {
-					Ok(v) => result!(v.to_string()),
-					Err(e) => { return err_str(e); },
-				};
+				let str = result!(crate::str_from_wide_str(&k32path).map_err(|_|"Couldn't convert Wide string to rust string."));
 				let k32 = result!(std::fs::read(&str));
 				
 				let dll_parsed = result!(Wrap::<pelite::pe32::PeFile,pelite::pe64::PeFile>::from_bytes(k32.as_slice()));
@@ -441,19 +437,9 @@ fn get_module_in_pid_predicate_selector<F, T>(pid: u32, dll: &str, selector: F, 
 	get_module_in_pid(pid,
 	                  move |module_entry: &MODULEENTRY32W| {
 		                  //The errors below are not handled really well, because I do not think, they will actually occur.
-		                  let module_cstr = match unsafe { WideCString::from_ptr_with_nul(module_entry.szModule.as_ptr(), module_entry.szModule.len()) } {
+		                  let module = match crate::str_from_wide_str(&module_entry.szModule) {
 			                  Ok(v) => v,
-			                  Err(e) => {
-				                  let _: Result<()> = err_str(e);
-				                  return None;
-			                  }
-		                  };
-		                  let module = match module_cstr.to_string() {
-			                  Ok(v) => v,
-			                  Err(e) => {
-				                  let _: Result<()> = err_str(e);
-				                  return None;
-			                  }
+			                  Err(e) => { return None;}
 		                  };
 		                  trace!("module:'{}', module==dll_no_path:'{}'",module,module==dll_no_path);
 		                  if module == dll_no_path
@@ -768,13 +754,10 @@ fn get_windir<'a>() -> Result<&'a String> {
 fn converter(compare:impl Fn(&String)->bool) -> impl Fn(Vec<u16>) -> Option<String>
 {
 	move |v| {
-		crate::str_from_wide_str(v.as_slice())
-			.map_or_else(
-				|e| {
-					warn!("Couldn't convert full dll path, to string. Will skip this dll, in assumption, that this dll is invalid. The Buffer contained invalid non-UTF-8 characters . Buf is {:#?}.", e);
-					None
-				}, |s| if compare(&s) { Some(s) } else { None },
-			)
+		match crate::str_from_wide_str(v.as_slice()){
+			Ok(s)=>if compare(&s) {Some(s)} else {None},
+			Err(_)=>None,
+		}
 	}
 }
 
@@ -791,7 +774,7 @@ fn get_ntdll_base_addr(explicit_x86:bool, proc:&Process) ->Result<(String, u64)>
 	let ntdll = get_windir()?.clone()+if !explicit_x86 {"\\System32\\ntdll.dll"}else{"\\SysWOW64\\ntdll.dll"};
 	let ntdll = ntdll.to_lowercase();
 	//let proc_self = guard_check_ptr!(OpenProcess(PROCESS_ALL_ACCESS,FALSE,std::process::id()),"Process");
-	Ok(unsafe{get_module_in_proc(proc,
+	unsafe{get_module_in_proc(proc,
 |m,v|{
 			let base = match m{
 				Wrap::T32(v)=>v.DllBase as u64,
@@ -803,7 +786,7 @@ fn get_ntdll_base_addr(explicit_x86:bool, proc:&Process) ->Result<(String, u64)>
 				s.to_lowercase()==ntdll})(v);
 			str.map(|s|(s, base))
 		}
-	)}?)
+	)}
 }
 ///This gets the Relative Virtual Address (rva) of the function name, from a ntdll file.
 ///If explicit_x86 is true, this function will ALWAYS try to open the x86 ntdll in the SysWOW64 folder.

@@ -1,6 +1,8 @@
 // #![cfg_attr(feature = "nightly", feature(asm,global_asm, asm_const))]
 
-use log::{debug,error,warn, trace};
+use std::ffi::OsString;
+use std::os::windows::ffi::OsStringExt;
+use log::{debug, error, warn, trace};
 
 
 
@@ -30,19 +32,13 @@ impl<'a> Injector<'a> {
     }
     pub fn find_pid(name: &str) -> Result<Vec<u32>> {
         Self::find_pid_selector(|p|{
-            match match widestring::WideCStr::from_slice_with_nul(&p.szExeFile){
-                Ok(v)=>v.to_string(),
-                Err(e)=>{
-                    warn!("Skipping check of process. Can't construct string, to compare against. Err:{}",e);
-                    return false;
-                }
-            }{
+            match crate::str_from_wide_str(&p.szExeFile){
                 Ok(str)=>{
                     debug!("Checking {} against {}",str,name);
                     strip_rust_path(str.as_str())==name
                 },
                 Err(e)=>{
-                    warn!("Skipping check of process. Can't construct string, to compare against. Err:{}",e);
+                    warn!("Skipping check of process. Can't construct string, to compare against. Err:{:#?}",e);
                     false
                 }
             }
@@ -80,4 +76,10 @@ pub fn strip_win_path(str:&str)->&str{
     }
     trace!("str='{}' and truncated='{}'", str, str_no_path);
     str_no_path
+}
+pub fn str_from_wide_str(v:&[u16])->std::result::Result<String,OsString>{
+    OsString::from_wide(v).into_string().map_err(|e| {
+        warn!("Couldn't convert widestring, to string. The Buffer contained invalid non-UTF-8 characters . Buf is {:#?}.", e);
+        e
+    })
 }
