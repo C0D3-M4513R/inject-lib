@@ -1,13 +1,14 @@
-#![allow(non_snake_case)]//Windows structs do not follow rust convention. Ignore warnings about names.
-use winapi::shared::ntdef::{NTSTATUS, BOOLEAN, ULONG, USHORT, CHAR, UNICODE_STRING64, UCHAR};
-use winapi::shared::basetsd::ULONG64;
+#![allow(non_snake_case)] //Windows structs do not follow rust convention. Ignore warnings about names.
 use ntapi::ntapi_base::KPRIORITY;
-use winapi::STRUCT;
-use winapi::um::winnt::{ULARGE_INTEGER, LARGE_INTEGER, LIST_ENTRY64, FLS_MAXIMUM_AVAILABLE, ULONGLONG, PVOID64, HANDLE};
-use ntapi::ntpsapi::GDI_HANDLE_BUFFER64;
 use ntapi::ntldr::LDR_DLL_LOAD_REASON;
+use ntapi::ntpsapi::GDI_HANDLE_BUFFER64;
+use winapi::shared::basetsd::ULONG64;
 use winapi::shared::minwindef::BOOL;
-
+use winapi::shared::ntdef::{BOOLEAN, CHAR, NTSTATUS, UCHAR, ULONG, UNICODE_STRING64, USHORT};
+use winapi::um::winnt::{
+    FLS_MAXIMUM_AVAILABLE, HANDLE, LARGE_INTEGER, LIST_ENTRY64, PVOID64, ULARGE_INTEGER, ULONGLONG,
+};
+use winapi::STRUCT;
 
 macro_rules! UNION {
     ($(#[$attrs:meta])* union $name:ident {
@@ -30,20 +31,20 @@ macro_rules! UNION {
     );
 }
 
-STRUCT!{struct PROCESS_BASIC_INFORMATION_WOW64{
-	ExitStatus:NTSTATUS,
-	PebBaseAddress:ULONG64,
-	AffinityMask:ULONG64,
-	BasePriority:KPRIORITY,
-	UniqueProcessId:ULONG64,
-	InheritedFromUniqueProcessId:ULONG64,
+STRUCT! {struct PROCESS_BASIC_INFORMATION_WOW64{
+    ExitStatus:NTSTATUS,
+    PebBaseAddress:ULONG64,
+    AffinityMask:ULONG64,
+    BasePriority:KPRIORITY,
+    UniqueProcessId:ULONG64,
+    InheritedFromUniqueProcessId:ULONG64,
 }}
 
-UNION!{union PEB64_u {
+UNION! {union PEB64_u {
     KernelCallbackTable: ULONG64, // WOW64_POINTER
     UserSharedInfoPtr: ULONG64, // WOW64_POINTER
 }}
-STRUCT!{struct PEB64 {
+STRUCT! {struct PEB64 {
     InheritedAddressSpace: BOOLEAN,
     ReadImageFileExecOptions: BOOLEAN,
     BeingDebugged: BOOLEAN,
@@ -130,7 +131,7 @@ STRUCT!{struct PEB64 {
     PlaceholderCompatibilityModeReserved: [CHAR; 7],
 }}
 
-STRUCT!{struct PEB_LDR_DATA64 {
+STRUCT! {struct PEB_LDR_DATA64 {
     Length: ULONG,
     Initialized: BOOLEAN,
     SsHandle: HANDLE,
@@ -141,27 +142,27 @@ STRUCT!{struct PEB_LDR_DATA64 {
     ShutdownInProgress: BOOLEAN,
     ShutdownThreadId: HANDLE,
 }}
-STRUCT!{struct RTL_BALANCED_NODE64_u_s {
+STRUCT! {struct RTL_BALANCED_NODE64_u_s {
     Left: ULONG64, // WOW64_POINTER
     Right: ULONG64, // WOW64_POINTER
 }}
-UNION!{union RTL_BALANCED_NODE64_u {
+UNION! {union RTL_BALANCED_NODE64_u {
     Children: [ULONG64; 2], // WOW64_POINTER
     s: RTL_BALANCED_NODE64_u_s,
 }}
-STRUCT!{struct RTL_BALANCED_NODE64 {
+STRUCT! {struct RTL_BALANCED_NODE64 {
     u: RTL_BALANCED_NODE64_u,
     ParentValue: ULONG64,//Pointer in normal ntdll, but not WOW64?
 }}
-UNION!{union LDR_DATA_TABLE_ENTRY64_u1 {
+UNION! {union LDR_DATA_TABLE_ENTRY64_u1 {
     InInitializationOrderLinks: LIST_ENTRY64,
     InProgressLinks: LIST_ENTRY64,
 }}
-UNION!{union LDR_DATA_TABLE_ENTRY64_u2 {
+UNION! {union LDR_DATA_TABLE_ENTRY64_u2 {
     FlagGroup: [UCHAR; 4],
     Flags: ULONG,
 }}
-STRUCT!{struct LDR_DATA_TABLE_ENTRY64 {
+STRUCT! {struct LDR_DATA_TABLE_ENTRY64 {
     InLoadOrderLinks: LIST_ENTRY64,
     InMemoryOrderLinks: LIST_ENTRY64,
     u1: LDR_DATA_TABLE_ENTRY64_u1,

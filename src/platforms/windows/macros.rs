@@ -1,8 +1,8 @@
 #![cfg(target_os = "windows")]
 
-use std::fmt::Display;
 use crate::platforms::platform::Result;
 use log::{debug, error, info, trace, warn};
+use std::fmt::Display;
 use winapi::um::errhandlingapi::GetLastError;
 
 // use crate::platforms::platform::check_nt_status;
@@ -44,14 +44,12 @@ where
 ///Checks a NtStatus, using [check_nt_status].
 ///If [check_nt_status] returns Some value, it returns it, as an Err.
 macro_rules! check_nt_status {
-	($status:expr)=>{
-		{
-			let status = $status;
-			if let Some(tmp)=check_nt_status(status){
-				return Err(tmp);
-			}
-			status
-		}
-	}
+    ($status:expr) => {{
+        let status = $status;
+        if let Some(tmp) = check_nt_status(status) {
+            return Err(tmp);
+        }
+        status
+    }};
 }
 pub(crate) use check_nt_status;
