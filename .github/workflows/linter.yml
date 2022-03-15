@@ -1,0 +1,75 @@
+---
+###########################
+###########################
+## Linter GitHub Actions ##
+###########################
+###########################
+name: Lint Code Base
+
+#
+# Documentation:
+# https://help.github.com/en/articles/workflow-syntax-for-github-actions
+#
+
+#############################
+# Start the job on all push #
+#############################
+on:
+    push:
+        branches-ignore: [ main ]
+        # Remove the line above to run when pushing to master
+    pull_request:
+        branches: [ main ]
+
+###############
+# Set the Job #
+###############
+jobs:
+    format:
+        name: rustfmt
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v2
+            - uses: actions-rs/toolchain@v1
+              with:
+                  toolchain: nightly
+                  components: rustfmt
+                  override: true
+            - uses: LoliGothick/rustfmt-check@v0.2
+              with:
+                  token: ${{ secrets.GITHUB_TOKEN }}
+                  flags: --all
+                  options: --manifest-path=Cargo.toml
+                  args: --config-path=rustfmt.toml
+    build:
+        # Name the Job
+        name: Lint Code Base
+        # Set the agent to run on
+        runs-on: ubuntu-latest
+
+        ##################
+        # Load all steps #
+        ##################
+        steps:
+            ##########################
+            # Checkout the code base #
+            ##########################
+            -   name: Checkout Code
+                uses: actions/checkout@v3
+                with:
+                    # Full git history is needed to get a proper list of changed files within `super-linter`
+                    fetch-depth: 0
+
+            ################################
+            # Run Linter against code base #
+            ################################
+            -   name: Lint Code Base
+                uses: github/super-linter@v4
+                env:
+                    VALIDATE_ALL_CODEBASE: true
+                    VALIDATE_RUST_2015: false
+                    VALIDATE_RUST_2018: false
+                    VALIDATE_RUST_2021: false
+                    VALIDATE_RUST_CLIPPY: false
+                    DEFAULT_BRANCH: main
+                    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
