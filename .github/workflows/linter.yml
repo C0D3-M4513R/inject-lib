@@ -16,10 +16,12 @@ name: Lint Code Base
 #############################
 on:
     push:
-        branches-ignore: [ main ]
+        branches: [staging,trying,dev,main]
         # Remove the line above to run when pushing to master
     pull_request:
         branches: [ main ]
+env:
+  CARGO_TERM_COLOR: always
 
 ###############
 # Set the Job #
