@@ -108,8 +108,8 @@ pub(crate) unsafe fn exec(
     zero_bits: ULONG,
     maximum_stack_size: SIZE_T,
     committed_stack_size: SIZE_T,
-    start_addres: LPVOID,
-    parameter: LPVOID,
+    start_addres: u64,
+    parameter: u64,
 ) -> Result<(NTSTATUS, HANDLE, CLIENT_ID64)> {
     let mut thread: u64 = 0;
     let mut client: ntapi::ntapi_base::CLIENT_ID64 = CLIENT_ID64 {
@@ -125,8 +125,8 @@ pub(crate) unsafe fn exec(
         0,
         0,
         0,
-        start_addres as usize,
-        parameter as usize,
+        start_addres as u64,
+        parameter as u64,
         &mut thread as *mut u64 as usize,
         &mut client as PCLIENT_ID64 as usize
     );

@@ -43,12 +43,12 @@ impl MemPage {
             )
         };
         if addr.is_null() {
-            return err(format!(
+            return Err(err(format!(
                 "VirtualAllocEx failed to allocate {} {} bytes on process {:x}",
                 size,
                 if exec { "executable" } else { "" },
                 proc as usize
-            ));
+            )));
         }
         Ok(MemPage {
             proc,
@@ -73,7 +73,9 @@ impl MemPage {
                 &mut n as *mut usize,
             ) == FALSE
         } {
-            return crate::platforms::platform::macros::err("WriteProcessMemory");
+            return Err(crate::platforms::platform::macros::err(
+                "WriteProcessMemory",
+            ));
         }
         debug_assert!(n == buffer.len());
         Ok(n)
@@ -99,7 +101,7 @@ impl Drop for MemPage {
             error!("Error during cleanup! VirtualFreeEx with MEM_RELEASE should not fail according to doc, but did anyways. A memory page will stay allocated. Addr:{:x},size:{:x}",self.addr as usize,self.size);
             //Supress unused_must_use warning. This is intended, but one cannot use allow, to supress this?
             //todo: a bit hacky? Is there a better way, to achieve something similar?
-            void_res(err::<(), &str>("VirtualFreeEx of VirtualAllocEx"));
+            void_res(err::<&str>("VirtualFreeEx of VirtualAllocEx"));
             //Do not panic here, since it could cause to an abort.
             // panic!("Error during cleanup")
         }
