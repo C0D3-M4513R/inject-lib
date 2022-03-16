@@ -51,11 +51,13 @@ mod mem;
 mod process;
 mod thread;
 
-use std::thread::{sleep, yield_now};
-//todo: are these imports gateable?
+#[cfg(feature = "ntdll")]
 use ntapi::ntapi_base::{CLIENT_ID, CLIENT_ID64, PCLIENT_ID, PCLIENT_ID64};
+#[cfg(feature = "ntdll")]
 use ntapi::ntpsapi::{NtCreateProcess, NtCreateThread};
+#[cfg(feature = "ntdll")]
 use ntapi::ntrtl::{RtlCreateUserThread, PUSER_THREAD_START_ROUTINE};
+use std::thread::{sleep, yield_now};
 
 use crate::platforms::platform::macros::{err, void_res};
 use crate::platforms::platform::mem::MemPage;
@@ -934,6 +936,7 @@ fn converter(compare: impl Fn(&String) -> bool) -> impl Fn(Vec<u16>) -> Option<S
 ///If the specified version of ntdll is not loaded within that process, this function will return win an error.
 ///This case should only happen on x86 installs of windows and if explicit_x86 is true.
 ///On x86 installs of windows there is no WOW, and therefore no SysWOW64 folder.
+#[cfg(feature = "ntdll")]
 fn get_ntdll_base_addr(explicit_x86: bool, proc: &Process) -> Result<(String, u64)> {
     let ntdll = get_windir()?.clone()
         + if !explicit_x86 {
@@ -1061,10 +1064,12 @@ fn get_module(name: &str, proc: &Process) -> Result<(String, u64)> {
                     "get_module_in_pid_predicate_selector failed, with str:{}, n:{}.",
                     s, n
                 );
+                Err((s, n))
             }
         }
     } else {
-        warn!("We are injecting from a x86 injector into a x64 target executable. ")
+        warn!("We are injecting from a x86 injector into a x64 target executable. ");
+        Err(("No Ntdll support enabled. Cannot get module. Target process is x64, but we are compiled as x86.".to_string(),0))
     }
     #[cfg(feature = "ntdll")]
     {

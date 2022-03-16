@@ -4,7 +4,7 @@ use std::fmt::{format, Display, Formatter};
 use std::ops::Deref;
 use winapi::shared::minwindef::{FALSE, LPCVOID, LPVOID};
 
-use crate::platforms::platform::macros::{err, guard_check_ptr, void_res};
+use crate::platforms::platform::macros::{err, void_res};
 use log::{debug, error, info, trace, warn};
 use winapi::shared::basetsd::SIZE_T;
 use winapi::um::memoryapi::{
