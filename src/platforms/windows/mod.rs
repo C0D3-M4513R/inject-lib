@@ -4,7 +4,7 @@ mod macros;
 use crate::{strip_rust_path, strip_win_path, Injector, Result};
 use macros::{check_nt_status, check_ptr};
 use std::cell::Cell;
-use std::ffi::{CStr, CString};
+use std::ffi::{CStr, CString, OsString};
 
 use log::{debug, error, info, trace, warn};
 use pelite::{Pod, Wrap};
@@ -67,7 +67,28 @@ use once_cell::sync::OnceCell;
 use pelite::Align::File;
 use pelite::Wrap::T32;
 
+pub fn str_from_wide_str(v: &[u16]) -> Result<String> {
+    OsString::from_wide(v).into_string().map_err(|e| {
+        warn!("Couldn't convert widestring, to string. The Buffer contained invalid non-UTF-8 characters . Buf is {:#?}.", e);
+        crate::error::Error::WTFConvert(e)
+    })
+}
+
 impl<'a> Injector<'a> {
+    pub fn find_pid(name: &str) -> Result<Vec<u32>> {
+        Self::find_pid_selector(|p| {
+            match str_from_wide_str(crate::trim_wide_str(p.szExeFile.to_vec()).as_slice()) {
+                Ok(str) => {
+                    debug!("Checking {} against {}", str, name);
+                    strip_rust_path(str.as_str()) == name
+                }
+                Err(e) => {
+                    warn!("Skipping check of process. Can't construct string, to compare against. Err:{:#?}",e);
+                    false
+                }
+            }
+        })
+    }
     //todo: use the structs
     pub fn eject(&self) -> Result<()> {
         if self.pid == 0 {
@@ -103,7 +124,7 @@ impl<'a> Injector<'a> {
                     |m| (m.szExePath, m.modBaseAddr),
                     None,
                 )?;
-                let str = crate::str_from_wide_str(&k32path)?;
+                let str = str_from_wide_str(&k32path)?;
                 let k32 = std::fs::read(&str)?;
 
                 let dll_parsed = pelite::PeFile::from_bytes(k32.as_slice())?;
@@ -581,7 +602,7 @@ where
         pid,
         move |module_entry: &MODULEENTRY32W| {
             //The errors below are not handled really well, because I do not think, they will actually occur.
-            let module = match crate::str_from_wide_str(
+            let module = match str_from_wide_str(
                 crate::trim_wide_str(module_entry.szModule.to_vec()).as_slice(),
             ) {
                 Ok(v) => v,
@@ -761,7 +782,7 @@ where
                 T32(v) => v.DllBase as u64,
                 pelite::Wrap::T64(v) => v.DllBase as u64,
             };
-            match crate::str_from_wide_str(dll_path.as_slice()) {
+            match str_from_wide_str(dll_path.as_slice()) {
                 Ok(v) => {
                     debug!("dll_name is {},{:x}", v, addr);
                 }
@@ -932,7 +953,7 @@ fn get_windir<'a>() -> Result<&'a String> {
 		let i2=check_ptr!(GetSystemWindowsDirectoryW(str_buf.as_mut_ptr(),i),|v|v==0);
         assert!(i2<=i,"GetSystemWindowsDirectoryA says, that {} bytes are needed, but then changed it's mind. Now {} bytes are needed.",i,i2);
 		unsafe{str_buf.set_len(i2 as usize)};
-		let string = crate::str_from_wide_str(str_buf.as_slice())?;
+		let string = str_from_wide_str(str_buf.as_slice())?;
 		debug!("Windir is {},{},{}",string,i,i2);
 		Ok(string)
 	})?;
@@ -943,7 +964,7 @@ fn get_windir<'a>() -> Result<&'a String> {
 ///Will return the string, if compare returned true, for that string.
 //todo: could we remove this?
 fn converter(compare: impl Fn(&String) -> bool) -> impl Fn(Vec<u16>) -> Option<String> {
-    move |v| match crate::str_from_wide_str(v.as_slice()) {
+    move |v| match str_from_wide_str(v.as_slice()) {
         Ok(s) => {
             if compare(&s) {
                 Some(s)
