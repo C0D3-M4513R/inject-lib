@@ -16,8 +16,8 @@ jobs:
     strategy:
       matrix:
         os: [ ubuntu-latest, windows-latest ]
-        args: [--release -v, -v]
-        toolchain: [nightly,beta,stable]
+        args: [-v] #--release -v,
+        toolchain: [nightly,stable]
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
@@ -38,9 +38,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ ubuntu-latest, windows-latest ]
-        args: [ --release -v, -v]
-        toolchain: [ nightly ]
+        os: [ windows-latest ] #ubuntu-latest
+        args: [-v] #--release -v
+        toolchain: [ nightly, nightly-i686 ]
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
