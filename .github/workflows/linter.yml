@@ -40,12 +40,10 @@ jobs:
                   toolchain: stable
                   components: rustfmt
                   override: true
-            - uses: LoliGothick/rustfmt-check@v0.2
+            - uses: actions-rs/cargo@v1
               with:
-                  token: ${{ secrets.GITHUB_TOKEN }}
-                  flags: --all
-                  options: --manifest-path=Cargo.toml
-                  args: --config-path=rustfmt.toml
+                  command: fmt
+                  args: --check --verbose --manifest-path Cargo.toml -- --config-path rustfmt.toml
     lint:
         # Name the Job
         name: Lint Code Base

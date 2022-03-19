@@ -7,6 +7,7 @@ pub enum Error {
     Ntdll(i32),
     WTFConvert(OsString), //Windows u16 string stuff
     Io(std::io::Error),
+    #[cfg(target_family = "windows")]
     Pelite(pelite::Error),
     Unsupported(Option<String>),
     Unsuccessful(Option<String>),
@@ -18,6 +19,7 @@ impl From<std::io::Error> for Error {
         Error::Io(e)
     }
 }
+#[cfg(target_family = "windows")]
 impl From<pelite::Error> for Error {
     fn from(e: pelite::Error) -> Self {
         Error::Pelite(e)
@@ -41,6 +43,7 @@ impl Display for Error {
                 if let Some(s) = r { s } else { "None" }
             ),
             Error::Io(e) => write!(f, "{}", e),
+            #[cfg(target_family = "windows")]
             Error::Pelite(e) => write!(f, "{}", e),
         }
     }

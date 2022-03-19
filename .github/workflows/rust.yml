@@ -1,19 +1,5 @@
----
-###########################
-###########################
-## Linter GitHub Actions ##
-###########################
-###########################
 name: Rust Tests
 
-#
-# Documentation:
-# https://help.github.com/en/articles/workflow-syntax-for-github-actions
-#
-
-#############################
-# Start the job on all push #
-#############################
 on:
   push:
     branches: [staging,trying,dev,main]
@@ -24,16 +10,13 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
-###############
-# Set the Job #
-###############
 jobs:
   build:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ ubuntu-latest, windows-latest ]
-        args: [--release,]
+        args: [--release -v, -v]
         toolchain: [nightly,beta,stable]
     steps:
       - uses: actions/checkout@v3
@@ -56,7 +39,7 @@ jobs:
     strategy:
       matrix:
         os: [ ubuntu-latest, windows-latest ]
-        args: [ --release, ]
+        args: [ --release -v, -v]
         toolchain: [ nightly ]
     steps:
       - uses: actions/checkout@v3
