@@ -29,12 +29,15 @@ env:
 jobs:
     format:
         name: rustfmt
-        runs-on: ubuntu-latest
+        runs-on: ${{ matrix.os }}
+        strategy:
+            matrix:
+                os: [ ubuntu-latest, windows-latest ]
         steps:
             - uses: actions/checkout@v3
             - uses: actions-rs/toolchain@v1
               with:
-                  toolchain: nightly
+                  toolchain: stable
                   components: rustfmt
                   override: true
             - uses: LoliGothick/rustfmt-check@v0.2
@@ -43,7 +46,7 @@ jobs:
                   flags: --all
                   options: --manifest-path=Cargo.toml
                   args: --config-path=rustfmt.toml
-    build:
+    lint:
         # Name the Job
         name: Lint Code Base
         # Set the agent to run on

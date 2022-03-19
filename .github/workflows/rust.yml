@@ -1,0 +1,75 @@
+---
+###########################
+###########################
+## Linter GitHub Actions ##
+###########################
+###########################
+name: Rust Tests
+
+#
+# Documentation:
+# https://help.github.com/en/articles/workflow-syntax-for-github-actions
+#
+
+#############################
+# Start the job on all push #
+#############################
+on:
+  push:
+    branches: [staging,trying,dev,main]
+    # Remove the line above to run when pushing to master
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+env:
+  CARGO_TERM_COLOR: always
+
+###############
+# Set the Job #
+###############
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ ubuntu-latest, windows-latest ]
+        args: [--release,]
+        toolchain: [nightly,beta,stable]
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt
+          override: true
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: ${{ matrix.args }} --features ntdll
+      - uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: ${{ matrix.args }} --features ntdll
+
+  build-nightly:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ ubuntu-latest, windows-latest ]
+        args: [ --release, ]
+        toolchain: [ nightly ]
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt
+          override: true
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: ${{ matrix.args }} --all-features
+      - uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: ${{ matrix.args }} --all-features
