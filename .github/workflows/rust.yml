@@ -17,7 +17,7 @@ jobs:
       matrix:
         os: [ ubuntu-latest, windows-latest ]
         args: [-v] #--release -v,
-        toolchain: [nightly,stable]
+        toolchain: [stable,stable-i686]
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
