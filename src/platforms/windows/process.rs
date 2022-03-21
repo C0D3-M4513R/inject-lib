@@ -1,4 +1,3 @@
-use crate::macros::err_str;
 use crate::platforms::platform::macros::{check_ptr, err};
 use crate::Result;
 use log::{debug, error, info, trace, warn};
@@ -23,9 +22,9 @@ pub struct Process {
 }
 impl Process {
     pub fn new(pid: u32, perms: DWORD) -> Result<Self> {
-        let proc = check_ptr!(OpenProcess(perms, FALSE, pid));
+        let proc = check_ptr!(OpenProcess(perms, FALSE, pid)) as usize;
         Ok(Self {
-            proc: proc as usize,
+            proc,
             pid,
             perms,
             wow: Default::default(),
@@ -52,7 +51,7 @@ impl Process {
             &mut native_machine as *mut u16,
         ) == FALSE
         {
-            return err("IsWow64Process2 number 1");
+            return Err(err("IsWow64Process2 number 1"));
         }
         println!("proc:{:#x}", process_machine);
         println!("native:{:#x}", native_machine);
@@ -76,7 +75,9 @@ impl Process {
         {
             self.unchecked_is_under_wow()
         } else {
-            err_str("Process Handle does not have the required permissions.")
+            Err(crate::error::Error::from(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied,
+            )))
         }
     }
     pub fn get_proc(&self) -> HANDLE {
@@ -95,7 +96,7 @@ impl Drop for Process {
             //Supress unused_must_use warning. This is intended, but one cannot use allow, to supress this?
             //todo: a bit hacky? Is there a better way, to achieve something similar?
             crate::platforms::platform::macros::void_res(
-                crate::platforms::platform::macros::err::<(), String>(
+                crate::platforms::platform::macros::err::<String>(
                     "CloseHandle of ".to_string() + std::stringify!($name),
                 ),
             );

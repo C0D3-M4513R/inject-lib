@@ -1,20 +1,16 @@
 // #![cfg_attr(feature = "nightly", feature(asm,global_asm, asm_const))]
 
 use log::{debug, error, trace, warn};
-use std::ffi::OsString;
-use std::os::windows::ffi::OsStringExt;
 
 pub struct Injector<'a> {
     pub dll: &'a str,
     pub pid: u32,
 }
 
-mod macros;
-pub(crate) type Error = (String, u32);
-pub(crate) type Result<T> = std::result::Result<T, Error>;
+pub(crate) type Result<T> = std::result::Result<T, error::Error>;
 
+pub mod error;
 mod hof;
-
 mod platforms;
 
 impl<'a> Injector<'a> {
@@ -26,18 +22,6 @@ impl<'a> Injector<'a> {
     }
     pub fn set_pid(&mut self, pid: u32) {
         self.pid = pid;
-    }
-    pub fn find_pid(name: &str) -> Result<Vec<u32>> {
-        Self::find_pid_selector(|p| match crate::str_from_wide_str(&p.szExeFile) {
-            Ok(str) => {
-                debug!("Checking {} against {}", str, name);
-                strip_rust_path(str.as_str()) == name
-            }
-            Err(e) => {
-                warn!("Skipping check of process. Can't construct string, to compare against. Err:{:#?}",e);
-                false
-            }
-        })
     }
 }
 
@@ -72,9 +56,14 @@ pub fn strip_win_path(str: &str) -> &str {
     trace!("str='{}' and truncated='{}'", str, str_no_path);
     str_no_path
 }
-pub fn str_from_wide_str(v: &[u16]) -> std::result::Result<String, OsString> {
-    OsString::from_wide(v).into_string().map_err(|e| {
-        warn!("Couldn't convert widestring, to string. The Buffer contained invalid non-UTF-8 characters . Buf is {:#?}.", e);
-        e
-    })
+
+///This truncates all 0 from the end of a Vec
+///This will keep other 0 entries in the Vec perfectly intact.
+///This has a worst case performance of o(n).
+//todo: improve performance
+pub fn trim_wide_str(mut v: Vec<u16>) -> Vec<u16> {
+    while v.last().map(|x| *x) == Some(0) {
+        v.pop();
+    }
+    return v;
 }

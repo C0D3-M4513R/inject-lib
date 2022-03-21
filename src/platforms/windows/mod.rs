@@ -1,10 +1,10 @@
-#![cfg(target_os = "windows")]
+#![cfg(windows)]
 mod macros;
 
-use crate::macros::{err_str, result};
-use crate::{strip_rust_path, strip_win_path, Error, Injector, Result};
+use crate::{strip_rust_path, strip_win_path, Injector, Result};
 use macros::{check_nt_status, check_ptr};
 use std::cell::Cell;
+use std::ffi::{CStr, CString, OsString};
 
 use log::{debug, error, info, trace, warn};
 use pelite::{Pod, Wrap};
@@ -17,9 +17,7 @@ use std::ptr::{null, null_mut};
 use winapi::ctypes::c_void;
 use winapi::shared::basetsd::{DWORD64, PDWORD64, PULONG64, SIZE_T, ULONG64};
 use winapi::shared::minwindef::{DWORD, FALSE, LPVOID, MAX_PATH};
-use winapi::shared::ntdef::{
-    NTSTATUS, NT_ERROR, NT_WARNING, PULONG, PVOID, PVOID64, ULONG, ULONGLONG,
-};
+use winapi::shared::ntdef::{NTSTATUS, PULONG, PVOID, PVOID64, ULONG, ULONGLONG};
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
 use winapi::um::libloaderapi::{
     FreeLibrary, GetModuleHandleA, GetProcAddress, LoadLibraryA, DONT_RESOLVE_DLL_REFERENCES,
@@ -28,7 +26,9 @@ use winapi::um::libloaderapi::{
 use winapi::um::memoryapi::VirtualAlloc;
 use winapi::um::processthreadsapi::{CreateRemoteThread, GetCurrentProcess, OpenProcess};
 use winapi::um::synchapi::WaitForSingleObject;
-use winapi::um::sysinfoapi::{GetNativeSystemInfo, GetSystemWindowsDirectoryA, SYSTEM_INFO};
+use winapi::um::sysinfoapi::{
+    GetNativeSystemInfo, GetSystemWindowsDirectoryA, GetSystemWindowsDirectoryW, SYSTEM_INFO,
+};
 use winapi::um::tlhelp32::{
     CreateToolhelp32Snapshot, Module32FirstW, Module32NextW, Process32FirstW, Process32NextW,
     LPPROCESSENTRY32W, MAX_MODULE_NAME32, MODULEENTRY32W, PROCESSENTRY32W, TH32CS_SNAPMODULE,
@@ -59,6 +59,7 @@ use ntapi::ntpsapi::{NtCreateProcess, NtCreateThread};
 use ntapi::ntrtl::{RtlCreateUserThread, PUSER_THREAD_START_ROUTINE};
 use std::thread::{sleep, yield_now};
 
+use crate::error::Error;
 use crate::platforms::platform::macros::{err, void_res};
 use crate::platforms::platform::mem::MemPage;
 use crate::platforms::platform::process::Process;
@@ -66,12 +67,35 @@ use once_cell::sync::OnceCell;
 use pelite::Align::File;
 use pelite::Wrap::T32;
 
+pub fn str_from_wide_str(v: &[u16]) -> Result<String> {
+    OsString::from_wide(v).into_string().map_err(|e| {
+        warn!("Couldn't convert widestring, to string. The Buffer contained invalid non-UTF-8 characters . Buf is {:#?}.", e);
+        crate::error::Error::WTFConvert(e)
+    })
+}
+
 impl<'a> Injector<'a> {
+    pub fn find_pid(name: &str) -> Result<Vec<u32>> {
+        Self::find_pid_selector(|p| {
+            match str_from_wide_str(crate::trim_wide_str(p.szExeFile.to_vec()).as_slice()) {
+                Ok(str) => {
+                    debug!("Checking {} against {}", str, name);
+                    strip_rust_path(str.as_str()) == name
+                }
+                Err(e) => {
+                    warn!("Skipping check of process. Can't construct string, to compare against. Err:{:#?}",e);
+                    false
+                }
+            }
+        })
+    }
     //todo: use the structs
     pub fn eject(&self) -> Result<()> {
         if self.pid == 0 {
             warn!("Supplied id is 0. Will not eject.");
-            return err_str("PID is 0");
+            return Err(Error::Unsupported(Some(
+                "PID 0 is an invalid target under windows.".to_string(),
+            )));
         }
         let addr = match get_module_in_pid_predicate(self.pid, self.dll, None) {
             Ok(v) => v,
@@ -100,14 +124,12 @@ impl<'a> Injector<'a> {
                     |m| (m.szExePath, m.modBaseAddr),
                     None,
                 )?;
-                let str = result!(crate::str_from_wide_str(&k32path)
-                    .map_err(|_| "Couldn't convert Wide string to rust string."));
-                let k32 = result!(std::fs::read(&str));
+                let str = str_from_wide_str(&k32path)?;
+                let k32 = std::fs::read(&str)?;
 
-                let dll_parsed = result!(
-                    Wrap::<pelite::pe32::PeFile, pelite::pe64::PeFile>::from_bytes(k32.as_slice())
-                );
-                let lla = result!(dll_parsed.get_export_by_name("FreeLibraryAndExitThread"))
+                let dll_parsed = pelite::PeFile::from_bytes(k32.as_slice())?;
+                let lla = dll_parsed
+                    .get_export_by_name("FreeLibraryAndExitThread")?
                     .symbol()
                     .unwrap();
                 debug!("FreeLibraryAndExitThread is {:x}", lla);
@@ -133,16 +155,25 @@ impl<'a> Injector<'a> {
             debug!("Waiting for DLL to eject");
             match unsafe { WaitForSingleObject(*thread, INFINITE) } {
                 0x80 => {
-                    return err_str("WaitForSingleObject returned WAIT_ABANDONED");
+                    return Err(Error::Winapi(
+                        "WaitForSingleObject returned WAIT_ABANDONED".to_string(),
+                        0x80,
+                    ));
                 } //WAIT_ABANDONED
                 0x0 => {
                     info!("Dll eject success? IDK?! Hopefully? WaitForSingleObject returned WAIT_OBJECT_0")
                 } //WAIT_OBJECT_0
                 0x102 => {
-                    return err_str("Timeout hit at WaitForSingleObject.");
+                    return Err(Error::Winapi(
+                        "Timeout hit at WaitForSingleObject.".to_string(),
+                        0x102,
+                    ));
                 } //WAIT_TIMEOUT
                 0xFFFFFFFF => {
-                    return macros::err("WaitForSingleObject");
+                    return Err(Error::Winapi(
+                        "Wait_Failed hit at WaitForSingleObject.".to_string(),
+                        0xFFFFFFFF,
+                    ));
                 } //WAIT_FAILED
                 _ => {}
             }
@@ -151,11 +182,10 @@ impl<'a> Injector<'a> {
             error!("The above error is expected!");
             Ok(())
         } else {
-            info!("Inject actually failed");
-            Err((
+            info!("Eject actually failed");
+            Err(Error::Unsuccessful(Some(
                 "Inject didn't succeed. Blame the dll, or Windows, but I tried.".to_string(),
-                0,
-            ))
+            )))
         }
     }
 
@@ -183,8 +213,10 @@ impl<'a> Injector<'a> {
         //https://helloacm.com/how-to-check-if-a-dll-or-exe-is-32-bit-or-64-bit-x86-or-x64-using-vbscript-function/
         //TODO: Recheck this Fn, and all the winapi calls
         if self.pid == 0 {
-            warn!("Supplied id is 0. Will not inject, as it is not supported by windows");
-            return err_str("PID is 0");
+            warn!("Supplied id is 0. Will not inject, as it is not supported by windows.");
+            return Err(Error::Unsupported(Some(
+                "PID 0 is an invalid target under windows.".to_string(),
+            )));
         }
         let proc = Process::new(
             self.pid,
@@ -223,29 +255,39 @@ impl<'a> Injector<'a> {
                 warn!("This injection will use a slightly different method, than usually. This is normal, when the injector is x86, but the pid specified is a x64 process.\
 				We will be using ntdll methods. The ntdll.dll is technically not a public facing windows api.");
             } else {
-                return err_str("Cannot continue injection. You are trying to inject from a x86 injector into a x64 application. That is unsupportable, without access to ntdll functions.");
+                return Err(Error::Unsupported(Some("Cannot continue injection. You are trying to inject from a x86 injector into a x64 application. That is unsupportable, without access to ntdll functions.".to_string())));
             }
         };
 
         let dll_is_x64 = self.get_is_dll_x64()?;
 
         if dll_is_x64 && pid_is_under_wow {
-            error!("Injecting a x64 dll, into a x86 exe is unsupported. Will NOT abort, but expect the dll-injection to fail");
-            return Err(("Unsupported".to_string(), 0));
+            error!(
+                "Injecting a x64 dll, into a x86 exe is unsupported. Will not continue for now."
+            );
+            return Err(Error::Unsupported(Some(
+                "Injecting a x64 dll, into a x86 exe is unsupported.".to_string(),
+            )));
         } else if !dll_is_x64 && !pid_is_under_wow {
             error!("Injecting a x86 dll, into a x64 exe is unsupported. Could this case be supported? Send a PR, if you think, you can make this work! Will NOT abort, but expect the dll-injection to fail");
-            return Err(("Unsupported".to_string(), 0));
+            return Err(Error::Unsupported(Some(
+                "Injecting a x86 dll, into a x64 exe is unsupported.".to_string(),
+            )));
         }
         #[cfg(not(feature = "ntdll"))]
         if self_is_under_wow && !pid_is_under_wow {
-            return err_str("Cannot inject into a x64 Application without ntdll access.");
+            return Err(Error::Unsupported(Some(
+                "Cannot inject into a x64 Application without ntdll access.".to_string(),
+            )));
         }
         //This check makes sure, that get_module_in_pid_predicate will not fail, due to x86->x64 injection.
         if !self_is_under_wow || pid_is_under_wow {
             //Is the dll already injected?
             if get_module_in_pid_predicate(self.pid, self.dll, None).is_ok() {
-                return err_str("dll already injected");
+                return Err(Error::Unsupported(Some("dll already injected".to_string())));
             } else {
+                //todo: could we like not throw double errors here?
+                //  in this path, we don't consider the error thrown by get_module_in_pid_predicate an error, but expect it.
                 error!("The above error is expected!")
             }
         }
@@ -258,7 +300,6 @@ impl<'a> Injector<'a> {
             let (path, base) = get_module("KERNEL32.DLL", &proc)?;
             base + get_dll_export("LoadLibraryW", path)? as u64
         };
-
         //Prepare Argument for LoadLibraryA
         let mem = {
             let test = std::fs::canonicalize(self.dll)
@@ -266,7 +307,7 @@ impl<'a> Injector<'a> {
                 .to_str()
                 .unwrap()
                 .as_bytes();
-            let full_path: PathBuf = result!(std::fs::canonicalize(self.dll));
+            let full_path: PathBuf = std::fs::canonicalize(self.dll)?;
             let path: Vec<u16> = full_path.as_os_str().encode_wide().chain(Some(0)).collect();
             let mempage = mem::MemPage::new(
                 proc.get_proc(),
@@ -283,7 +324,7 @@ impl<'a> Injector<'a> {
         debug!("entry proc:{:x} vs {:x}", entry_point, entry_point as usize);
 
         //Execute LoadLibraryW in remote thread, and wait for dll to load
-        #[cfg(all(feature = "ntdll", target_arch = "x86"))]
+        #[cfg(all(feature = "x86tox64", target_arch = "x86"))]
         {
             //This method is intended to be only used, when we are compiled as x86, and are injecting to x64.
             if self_is_under_wow && !pid_is_under_wow {
@@ -305,12 +346,18 @@ impl<'a> Injector<'a> {
                         0,
                         0,
                         0,
-                        entry_point as LPVOID,
-                        mem.get_address(),
+                        entry_point as u64,
+                        mem.get_address() as u64,
                     )?
                 };
-                if let Some(tmp) = check_nt_status(r) {
-                    return Err(tmp);
+                match crate::error::Ntdll::new(r) {
+                    crate::error::Ntdll::Error(v) => {
+                        return Err(Error::Ntdll(v));
+                    }
+                    crate::error::Ntdll::Warning(v) => {
+                        return Err(Error::Ntdll(v));
+                    }
+                    _ => {}
                 }
                 //Idea: Replace the x64 pointer with a x86 pointer, we could theoretically pass.
                 //      That x86 pointer will be a jmp instruction, to the place we actually want to jump to.
@@ -359,7 +406,7 @@ impl<'a> Injector<'a> {
                 // 	};
                 // 	println!("{:x}",r);
                 // }
-                return err_str("Not implemented");
+                return Err(Error::Unsupported(None));
             }
         }
         if !self_is_under_wow || pid_is_under_wow {
@@ -380,23 +427,40 @@ impl<'a> Injector<'a> {
             info!("Waiting for DLL");
             // std::thread::sleep(Duration::new(0,500));//todo: why is this necessary, (only) when doing cargo run?
             match unsafe { WaitForSingleObject(*thread, INFINITE) } {
-                0x80 => return err_str("WaitForSingleObject returned WAIT_ABANDONED"), //WAIT_ABANDONED
+                0x80 => {
+                    return Err(Error::Winapi(
+                        "WaitForSingleObject returned WAIT_ABANDONED".to_string(),
+                        0x80,
+                    ));
+                } //WAIT_ABANDONED
                 0x0 => {
-                    info!("Dll inject success? IDK?! Hopefully? WaitForSingleObject returned WAIT_OBJECT_0");
+                    info!("Dll eject success? IDK?! Hopefully? WaitForSingleObject returned WAIT_OBJECT_0")
                 } //WAIT_OBJECT_0
-                0x102 => return err_str("Timeout hit at WaitForSingleObject."), //WAIT_TIMEOUT
-                0xFFFFFFFF => return macros::err("WaitForSingleObject"),        //WAIT_FAILED
+                0x102 => {
+                    return Err(Error::Winapi(
+                        "Timeout hit at WaitForSingleObject.".to_string(),
+                        0x102,
+                    ));
+                } //WAIT_TIMEOUT
+                0xFFFFFFFF => {
+                    return Err(Error::Winapi(
+                        "Wait_Failed hit at WaitForSingleObject.".to_string(),
+                        0xFFFFFFFF,
+                    ));
+                } //WAIT_FAILED
                 _ => {}
             }
             return Ok(());
         }
-        return err_str("No viable injection method.");
+        return Err(Error::Unsuccessful(Some(
+            "No viable injection method.".to_string(),
+        )));
         //Check, if the dll is actually loaded?
         //todo: can we skip this? is the dll always guaranteed to be loaded here, or is it up to the dll, to decide that?
         //todo: re-add a check, for loaded modules
 
         // get_module_in_pid_predicate_selector(self.pid,self.dll,|_|(),None)
-        Err(("".to_string(), 0))
+        //Err(("".to_string(), 0))
     }
 
     ///Find a PID, where the process-name matches some user defined selector
@@ -407,7 +471,7 @@ impl<'a> Injector<'a> {
         let mut pids: Vec<DWORD> = Vec::new();
         let snap_handle = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
         if snap_handle == INVALID_HANDLE_VALUE {
-            return macros::err("CreateToolhelp32Snapshot");
+            return Err(macros::err("CreateToolhelp32Snapshot"));
         }
         trace!("Got Snapshot of processes");
         let mut val = PROCESSENTRY32W {
@@ -429,7 +493,7 @@ impl<'a> Injector<'a> {
         let entry: LPPROCESSENTRY32W = &mut val as *mut PROCESSENTRY32W;
 
         if unsafe { Process32FirstW(snap_handle, entry) == FALSE } {
-            return macros::err("Process32FirstW");
+            return Err(macros::err("Process32FirstW"));
         }
 
         trace!("Ran Process32FirstW");
@@ -446,17 +510,14 @@ impl<'a> Injector<'a> {
     ///This function will return, whether a dll is x64, or x86.
     ///The Return value will be Ok(true), if the dll is x64(64bit), and Ok(false), if the dll is x86(32bit).
     pub fn get_is_dll_x64(&self) -> Result<bool> {
-        let dll = result!(std::fs::read(self.dll));
-        // let parsed = result!(Wrap::<pelite::pe32::PeFile,pelite::pe64::PeFile>::from_bytes(dll.as_slice()));
+        let dll = std::fs::read(self.dll)?;
+        // let parsed = result!(Wrap::<Pelite::pe32::PeFile,Pelite::pe64::PeFile>::from_bytes(dll.as_slice()));
         return match pelite::pe64::PeFile::from_bytes(dll.as_slice()) {
-            Ok(_) => return Ok(true),
+            Ok(_) => Ok(true),
             Err(pelite::Error::PeMagic) => pelite::pe32::PeFile::from_bytes(dll.as_slice())
-                .map_err(|err| {
-                    error!("{}", err);
-                    (format!("{}", err), 0)
-                })
+                .map_err(|e| e.into())
                 .map(|_| false),
-            Err(err) => return err_str(err),
+            Err(err) => Err(err.into()),
         };
         // let machine = parsed.file_header().Machine;
         // let dll_is_x64 = machine == IMAGE_FILE_MACHINE_AMD64;
@@ -513,7 +574,7 @@ where
         if unsafe { Module32NextW(snap_modules, &mut module_entry as *mut MODULEENTRY32W) } == FALSE
         {
             error!("Encountered error, while calling Module32NextW. This is expected, if there isn't a dll, with the specified name loaded.");
-            return macros::err("Module32NextW");
+            return Err(macros::err("Module32NextW"));
         }
     }
 }
@@ -541,7 +602,9 @@ where
         pid,
         move |module_entry: &MODULEENTRY32W| {
             //The errors below are not handled really well, because I do not think, they will actually occur.
-            let module = match crate::str_from_wide_str(&module_entry.szModule) {
+            let module = match str_from_wide_str(
+                crate::trim_wide_str(module_entry.szModule.to_vec()).as_slice(),
+            ) {
                 Ok(v) => v,
                 Err(e) => {
                     return None;
@@ -699,7 +762,7 @@ where
             if modlist_addr == first_modlist_addr {
                 const RECURSION:&str = "We looped through the whole InLoadOrderModuleList, but still have no match. Aborting, because this would end in an endless loop.";
                 warn!("{}", RECURSION);
-                return Err((RECURSION.to_string(), 0));
+                return Err(Error::Unsuccessful(Some(RECURSION.to_string())));
             }
 
             let dll_path_buf = read_virtual_mem_fn(
@@ -715,9 +778,13 @@ where
                 i += 1;
             }
 
-            match crate::str_from_wide_str(dll_path.as_slice()) {
+            let addr = match ldr_entry_data {
+                T32(v) => v.DllBase as u64,
+                pelite::Wrap::T64(v) => v.DllBase as u64,
+            };
+            match str_from_wide_str(dll_path.as_slice()) {
                 Ok(v) => {
-                    debug!("dll_name is {}", v);
+                    debug!("dll_name is {},{:x}", v, addr);
                 }
                 Err(e) => {
                     debug!("dll_name could not be printed. os_string is {:?}", e);
@@ -730,24 +797,6 @@ where
     }
 }
 
-///Checks a NtStatus. Will return Some value, if it is a critical error.
-///Otherwise, it will log the status, and return None.
-fn check_nt_status(status: NTSTATUS) -> Option<Error> {
-    if NT_ERROR(status) {
-        error!(
-            "Received error type, from ntdll. Status code is: {:x}",
-            status
-        );
-        return Some(("ntdll".to_string(), status as u32));
-    }
-    if NT_WARNING(status) {
-        warn!(
-            "Received warning type, from ntdll. Status code is: {:x}",
-            status
-        );
-    }
-    None
-}
 ///See [read_virtual_mem_fn].
 #[cfg(feature = "ntdll")]
 unsafe fn read_virtual_mem<T>(proc: HANDLE, addr: u64) -> Result<*mut T> {
@@ -806,7 +855,7 @@ unsafe fn read_virtual_mem_fn(proc: HANDLE, addr: u64, size: usize) -> Result<Ve
         size as u64,
         &mut i as *mut u64
     ));
-    trace!("rvm {:x},{}/{}", status as u32, i, size);
+    trace!("rvm {:x},{}/{}", status.get_status(), i, size);
     //We read i bytes. So we let the Vec know, so it can calculate size and deallocate accordingly, if it wants.
     //Also: This will enable debugger inspection, of the buf, since the debugger will now know, that the vec is initialised.
     buf.set_len(i as usize);
@@ -872,7 +921,7 @@ where
     ));
     trace!(
         "qip {:x},0x{:x}|0x{:x}/0x{:x} buf is {:?}",
-        status as u32,
+        status.get_status(),
         i,
         i as u32,
         size_peb,
@@ -899,14 +948,12 @@ fn get_windir<'a>() -> Result<&'a String> {
     static WINDIR: once_cell::sync::OnceCell<String> = once_cell::sync::OnceCell::new();
 
     let str = WINDIR.get_or_try_init(||{
-		let i=check_ptr!(GetSystemWindowsDirectoryA(std::ptr::null_mut(),0),|v|v==0);
-		let mut str_buf:Vec<u8> = Vec::with_capacity( i as usize);
-		let i2=check_ptr!(GetSystemWindowsDirectoryA(str_buf.as_mut_ptr() as *mut i8,i),|v|v==0);
+		let i=check_ptr!(GetSystemWindowsDirectoryW(std::ptr::null_mut(),0),|v|v==0);
+		let mut str_buf:Vec<u16> = Vec::with_capacity( i as usize);
+		let i2=check_ptr!(GetSystemWindowsDirectoryW(str_buf.as_mut_ptr(),i),|v|v==0);
+        assert!(i2<=i,"GetSystemWindowsDirectoryA says, that {} bytes are needed, but then changed it's mind. Now {} bytes are needed.",i,i2);
 		unsafe{str_buf.set_len(i2 as usize)};
-		if i2>i{
-			return err_str(format!("GetSystemWindowsDirectoryA says, that {} bytes are needed, but then changed it's mind. Now {} bytes are needed.",i,i2));
-		}
-		let string = result!(String::from_utf8(str_buf.clone()));
+		let string = str_from_wide_str(str_buf.as_slice())?;
 		debug!("Windir is {},{},{}",string,i,i2);
 		Ok(string)
 	})?;
@@ -917,7 +964,7 @@ fn get_windir<'a>() -> Result<&'a String> {
 ///Will return the string, if compare returned true, for that string.
 //todo: could we remove this?
 fn converter(compare: impl Fn(&String) -> bool) -> impl Fn(Vec<u16>) -> Option<String> {
-    move |v| match crate::str_from_wide_str(v.as_slice()) {
+    move |v| match str_from_wide_str(v.as_slice()) {
         Ok(s) => {
             if compare(&s) {
                 Some(s)
@@ -992,21 +1039,19 @@ fn get_ntdll_function(path: String, name: String) -> Result<u32> {
     } else {
         path
     };
-    info!(
-        "parsing {}|{}",
-        path,
-        result!(std::fs::canonicalize(&path)).to_string_lossy()
+    debug_assert!(
+        std::fs::canonicalize(&path).is_ok(),
+        "parsing {} failed",
+        path
     );
-    let k32 = result!(std::fs::read(&path));
+    let k32 = std::fs::read(&path)?;
     trace!("read file correctly");
     // check_ptr!(Wow64RevertWow64FsRedirection(par),|v|v==0);
 
-    let dll_parsed = result!(pelite::PeFile::from_bytes(k32.as_slice()));
+    let dll_parsed = pelite::PeFile::from_bytes(k32.as_slice())?;
     trace!("Parsed dll file!");
-    let rva = result!(dll_parsed.get_export_by_name(&name))
-        .symbol()
-        .unwrap();
-    trace!("Got RTLCreateUserThread export at {}", rva);
+    let rva = dll_parsed.get_export_by_name(&name)?.symbol().unwrap();
+    trace!("Got RTLCreateUserThread export at {:x}", rva);
     Ok(rva)
 }
 ///Takes in a Name. From that it returns a matcher
@@ -1059,17 +1104,17 @@ fn get_module(name: &str, proc: &Process) -> Result<(String, u64)> {
             None,
         ) {
             Ok(r) => return Ok(r),
-            Err((s, n)) => {
-                warn!(
-                    "get_module_in_pid_predicate_selector failed, with str:{}, n:{}.",
-                    s, n
-                );
-                Err((s, n))
+            //This should return, if ntdll is disabled. If ntdll is enabled, this gets discarded
+            Err(v) =>
+            {
+                #[cfg(not(feature = "ntdll"))]
+                return Err(v)
             }
         }
     } else {
         warn!("We are injecting from a x86 injector into a x64 target executable. ");
-        Err(("No Ntdll support enabled. Cannot get module. Target process is x64, but we are compiled as x86.".to_string(),0))
+        #[cfg(not(feature = "ntdll"))]
+        return Err(Error::Unsupported(Some("No Ntdll support enabled. Cannot get module. Target process is x64, but we are compiled as x86.".to_string())));
     }
     #[cfg(feature = "ntdll")]
     {
@@ -1103,16 +1148,14 @@ fn get_dll_export(name: &str, path: String) -> Result<u32> {
     } else {
         path
     };
-    debug!(
-        "parsing {}|{}",
+    debug_assert!(
+        std::fs::canonicalize(&path).is_ok(),
+        "parsing {} failed",
         path,
-        result!(std::fs::canonicalize(&path)).to_string_lossy()
     );
-    let k32 = result!(std::fs::read(&path));
-    let dll_parsed = result!(pelite::PeFile::from_bytes(k32.as_slice()));
-    let rva = result!(dll_parsed.get_export_by_name(name))
-        .symbol()
-        .unwrap();
+    let k32 = std::fs::read(&path)?;
+    let dll_parsed = pelite::PeFile::from_bytes(k32.as_slice())?;
+    let rva = dll_parsed.get_export_by_name(name)?.symbol().unwrap();
     trace!("Found {} at rva:{} in dll {}", name, rva, path);
     Ok(rva)
 }

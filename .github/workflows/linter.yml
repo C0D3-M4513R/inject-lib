@@ -16,10 +16,12 @@ name: Lint Code Base
 #############################
 on:
     push:
-        branches-ignore: [ main ]
+        branches: [staging,trying,dev,main]
         # Remove the line above to run when pushing to master
     pull_request:
         branches: [ main ]
+env:
+  CARGO_TERM_COLOR: always
 
 ###############
 # Set the Job #
@@ -27,21 +29,22 @@ on:
 jobs:
     format:
         name: rustfmt
-        runs-on: ubuntu-latest
+        runs-on: ${{ matrix.os }}
+        strategy:
+            matrix:
+                os: [ ubuntu-latest, windows-latest ]
         steps:
             - uses: actions/checkout@v3
             - uses: actions-rs/toolchain@v1
               with:
-                  toolchain: nightly
+                  toolchain: stable
                   components: rustfmt
                   override: true
-            - uses: LoliGothick/rustfmt-check@v0.2
+            - uses: actions-rs/cargo@v1
               with:
-                  token: ${{ secrets.GITHUB_TOKEN }}
-                  flags: --all
-                  options: --manifest-path=Cargo.toml
-                  args: --config-path=rustfmt.toml
-    build:
+                  command: fmt
+                  args: --check --verbose --manifest-path Cargo.toml -- --config-path rustfmt.toml
+    lint:
         # Name the Job
         name: Lint Code Base
         # Set the agent to run on

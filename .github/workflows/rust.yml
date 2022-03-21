@@ -1,0 +1,74 @@
+name: Rust Tests
+
+on:
+  push:
+    branches: [staging,trying,dev,main]
+    # Remove the line above to run when pushing to master
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        args: [-v] #--release -v,
+        target: [i686-pc-windows-msvc,x86_64-pc-windows-msvc]
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: ${{ matrix.args }} --features ntdll --target ${{ matrix.target }}
+      - uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: ${{ matrix.args }} --features ntdll --target ${{ matrix.target }}
+  build-ubuntu:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        args: [-v] #--release -v,
+        toolchain: [stable]
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: ${{ matrix.args }} --features ntdll
+      - uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: ${{ matrix.args }} --features ntdll
+
+  build-nightly:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ windows-latest ] #ubuntu-latest
+        args: [-v] #--release -v
+        target: [ i686-pc-windows-msvc,x86_64-pc-windows-msvc ]
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          target: ${{ matrix.target }}
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: ${{ matrix.args }} --all-features --target ${{ matrix.target }}
+      - uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: ${{ matrix.args }} --all-features --target ${{ matrix.target }}
