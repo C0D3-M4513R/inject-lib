@@ -6,6 +6,6 @@ This injector currently supports injecting from x64 into x86 and x64, and inject
 
 - [ ] Find a good name
 - [x] Make the injector work also on x86->x64
-- [ ] Get reliable exit codes/Redo error system.
+- [x] Get reliable exit codes/Redo error system.
 - [ ] Rework the outfacing api, to allow more control.
 - [ ] Use std::os::windows::process::OwnedHandle when stable
