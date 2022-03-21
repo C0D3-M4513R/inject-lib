@@ -324,7 +324,7 @@ impl<'a> Injector<'a> {
         debug!("entry proc:{:x} vs {:x}", entry_point, entry_point as usize);
 
         //Execute LoadLibraryW in remote thread, and wait for dll to load
-        #[cfg(all(feature = "ntdll", target_arch = "x86"))]
+        #[cfg(all(feature = "x86tox64", target_arch = "x86"))]
         {
             //This method is intended to be only used, when we are compiled as x86, and are injecting to x64.
             if self_is_under_wow && !pid_is_under_wow {

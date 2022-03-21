@@ -15,24 +15,22 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ windows-latest ]
         args: [-v] #--release -v,
-        toolchain: [stable,stable-i686]
+        target: [i686-pc-windows-msvc,x86_64-pc-windows-msvc]
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: ${{ matrix.toolchain }}
-          components: rustfmt
+          toolchain: stable
           override: true
       - uses: actions-rs/cargo@v1
         with:
           command: build
-          args: ${{ matrix.args }} --features ntdll
+          args: ${{ matrix.args }} --features ntdll --target ${{ matrix.target }}
       - uses: actions-rs/cargo@v1
         with:
           command: test
-          args: ${{ matrix.args }} --features ntdll
+          args: ${{ matrix.args }} --features ntdll --target ${{ matrix.target }}
   build-ubuntu:
     runs-on: ubuntu-latest
     strategy:
@@ -61,19 +59,18 @@ jobs:
       matrix:
         os: [ windows-latest ] #ubuntu-latest
         args: [-v] #--release -v
-        toolchain: [ nightly, nightly-i686 ]
+        target: [ i686-pc-windows-msvc,x86_64-pc-windows-msvc ]
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: ${{ matrix.toolchain }}
-          components: rustfmt
+          toolchain: nightly
           override: true
       - uses: actions-rs/cargo@v1
         with:
           command: build
-          args: ${{ matrix.args }} --all-features
+          args: ${{ matrix.args }} --all-features --target ${{ matrix.target }}
       - uses: actions-rs/cargo@v1
         with:
           command: test
-          args: ${{ matrix.args }} --all-features
+          args: ${{ matrix.args }} --all-features --target ${{ matrix.target }}
