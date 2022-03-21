@@ -15,6 +15,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        os: [windows-latest]
         args: [-v] #--release -v,
         target: [i686-pc-windows-msvc,x86_64-pc-windows-msvc]
     steps:
@@ -22,7 +23,7 @@ jobs:
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
-          override: true
+          target: ${{ matrix.target }}
       - uses: actions-rs/cargo@v1
         with:
           command: build
@@ -42,8 +43,6 @@ jobs:
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: ${{ matrix.toolchain }}
-          components: rustfmt
-          override: true
       - uses: actions-rs/cargo@v1
         with:
           command: build
@@ -65,7 +64,7 @@ jobs:
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
-          override: true
+          target: ${{ matrix.target }}
       - uses: actions-rs/cargo@v1
         with:
           command: build
