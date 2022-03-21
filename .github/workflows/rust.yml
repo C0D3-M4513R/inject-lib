@@ -12,10 +12,9 @@ env:
 
 jobs:
   build:
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
     strategy:
       matrix:
-        os: [windows-latest]
         args: [-v] #--release -v,
         target: [i686-pc-windows-msvc,x86_64-pc-windows-msvc]
     steps:
