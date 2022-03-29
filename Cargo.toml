@@ -8,7 +8,7 @@ homepage = "https://github.com/C0D3-M4513R/inject-lib"
 documentation = "https://docs.rs/inject-lib"
 authors = ["C0D3 M4513R <28912031+C0D3-M4513R@users.noreply.github.com>"]
 edition = "2021"
-license = "lgpl-2.1-only"
+license = "LGPL-2.1-only"
 categories = []
 keywords = ["dll-injection", "dll", "injector", "windows"]
 
