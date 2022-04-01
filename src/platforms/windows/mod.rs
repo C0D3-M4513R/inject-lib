@@ -49,7 +49,9 @@ mod ntdll;
 mod process;
 mod thread;
 
+#[cfg(feature = "ntdll")]
 use ntapi::ntapi_base::CLIENT_ID;
+#[cfg(feature = "ntdll")]
 use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
 use std::thread::{sleep, yield_now};
 
