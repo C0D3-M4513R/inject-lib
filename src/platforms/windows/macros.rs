@@ -1,7 +1,6 @@
 #![cfg(target_os = "windows")]
 
 use crate::error::Error;
-use crate::platforms::platform::Result;
 use log::{debug, error, info, trace, warn};
 use std::fmt::Display;
 use winapi::um::errhandlingapi::GetLastError;
@@ -22,7 +21,7 @@ macro_rules! check_ptr {
         {
             let _tmp = unsafe{$name($($args),*)};
             if $crate::platforms::platform::macros::__call__(_tmp,$predicate){
-                return Err($crate::platforms::platform::macros::err(std::stringify!($name)));
+                return Err($crate::error::Error::from(std::stringify!($name)));
             } else{
                _tmp
             }
@@ -43,16 +42,3 @@ where
     error!("{} failed! Errcode is:'{}'. Check, what the error code means here:'https://docs.microsoft.com/en-us/windows/win32/debug/system-error-codes'", fn_name, err);
     Error::Winapi(fn_name.to_string(), err)
 }
-
-///Checks a NtStatus, using [check_nt_status].
-///If [check_nt_status] returns Some value, it returns it, as an Err.
-macro_rules! check_nt_status {
-    ($status:expr) => {{
-        let status = $crate::error::Ntdll::new($status);
-        if status.is_error() {
-            return Err(status.into());
-        }
-        status
-    }};
-}
-pub(crate) use check_nt_status;

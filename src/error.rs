@@ -20,9 +20,24 @@ impl From<std::io::Error> for Error {
     }
 }
 #[cfg(target_family = "windows")]
-impl From<pelite::Error> for Error {
-    fn from(e: pelite::Error) -> Self {
-        Error::Pelite(e)
+mod windows {
+    use crate::error::Error;
+    use winapi::um::errhandlingapi::GetLastError;
+
+    impl From<pelite::Error> for Error {
+        fn from(e: pelite::Error) -> Self {
+            Error::Pelite(e)
+        }
+    }
+    impl From<String> for Error {
+        fn from(s: String) -> Self {
+            Error::Winapi(s, unsafe { GetLastError() })
+        }
+    }
+    impl<'a> From<&'a str> for Error {
+        fn from(s: &'a str) -> Self {
+            Error::Winapi(s.to_string(), unsafe { GetLastError() })
+        }
     }
 }
 
@@ -30,7 +45,7 @@ impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Winapi(s, n) => write!(f, "Winapi error:{} failed with code {}", s, n),
-            Error::Ntdll(n) => write!(f, "Ntdll Error:{:x}", n),
+            Error::Ntdll(n) => write!(f, "Ntdll Error:{:#x}", n),
             Error::WTFConvert(_) => write!(f, "Error: Buffer contained non UTF-8 characters."), //todo: should I print osstring here?
             Error::Unsupported(r) => write!(
                 f,
@@ -66,6 +81,17 @@ impl Ntdll {
             Ntdll::Other(v) => v,
             Ntdll::Success(v) => v,
             Ntdll::Information(v) => v,
+        }
+    }
+}
+impl Display for Ntdll {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Ntdll::Error(v) => write!(f, "Ntdll::Error({:#x})", v),
+            Ntdll::Warning(v) => write!(f, "Ntdll::Warning({:#x})", v),
+            Ntdll::Other(v) => write!(f, "Ntdll::Other({:#x})", v),
+            Ntdll::Success(v) => write!(f, "Ntdll::Success({:#x})", v),
+            Ntdll::Information(v) => write!(f, "Ntdll::Information({:#x})", v),
         }
     }
 }
