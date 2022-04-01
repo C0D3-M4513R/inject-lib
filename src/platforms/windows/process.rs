@@ -13,6 +13,7 @@ use winapi::um::winnt::{
 };
 use winapi::um::wow64apiset::IsWow64Process2;
 
+#[derive(Debug)]
 pub struct Process {
     //I save this as usize rather than Handle, because usize is sync.
     proc: usize,
@@ -53,10 +54,7 @@ impl Process {
         {
             return Err(err("IsWow64Process2 number 1"));
         }
-        println!("proc:{:#x}", process_machine);
-        println!("native:{:#x}", native_machine);
-
-        //That is, if the target exe, is compiled x86, but run on x64
+        trace!("proc:{:#x},native:{:#x}", process_machine, native_machine);
 
         //The value will be IMAGE_FILE_MACHINE_UNKNOWN if the target process is not a WOW64 process; otherwise, it will identify the type of WoW process.
         Ok(process_machine != IMAGE_FILE_MACHINE_UNKNOWN)
@@ -64,14 +62,15 @@ impl Process {
     ///Returns true, if the supplied process-handle is running under WOW, otherwise false.
     ///# Safety
     ///The process handle must have the PROCESS_QUERY_INFORMATION or PROCESS_QUERY_LIMITED_INFORMATION access right.
-    pub fn unchecked_is_under_wow(&self) -> Result<&bool> {
+    pub fn unchecked_is_under_wow(&self) -> Result<bool> {
         self.wow
             .get_or_try_init(|| unsafe { self.unchecked_impl_is_under_wow() })
+            .copied()
     }
     ///Returns true, if the supplied process-handle is running under WOW, otherwise false.
-    pub fn is_under_wow(&self) -> Result<&bool> {
-        if self.perms & PROCESS_QUERY_INFORMATION == PROCESS_QUERY_INFORMATION
-            || self.perms & PROCESS_QUERY_LIMITED_INFORMATION == PROCESS_QUERY_LIMITED_INFORMATION
+    pub fn is_under_wow(&self) -> Result<bool> {
+        if self.has_perm(PROCESS_QUERY_INFORMATION)
+            || self.has_perm(PROCESS_QUERY_LIMITED_INFORMATION)
         {
             self.unchecked_is_under_wow()
         } else {
@@ -85,6 +84,9 @@ impl Process {
     }
     pub fn get_pid(&self) -> u32 {
         self.pid
+    }
+    pub fn has_perm(&self, perm: DWORD) -> bool {
+        return self.perms & perm == perm;
     }
 }
 
