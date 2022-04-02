@@ -76,18 +76,21 @@ mod test {
 
     #[test]
     fn strip_path() -> Result<()> {
+        #[cfg(target_family = "windows")]
         assert_eq!(
             super::strip_path("C:\\this\\is\\a\\test\\path\\with\\a\\dir\\at\\the\\end\\")?,
             "end",
             "strip path failed to strip the end of a win path, with a dir at the end"
         );
         assert_eq!(
-            super::strip_path("C:/this/is/a/test/path/with/a/dir/at/the/end/")?,
+            super::strip_path("/this/is/a/test/path/with/a/dir/at/the/end/")?,
             "end",
             "strip path failed to strip the end of a rust path, with a dir at the end"
         );
+        #[cfg(target_family = "windows")]
         assert_eq!(super::strip_path("C:\\this\\is\\a\\test\\path\\with\\a\\dir\\at\\the\\end")?,"end","strip path failed to strip the end of a win path, with a dir/extensionless file at the end");
-        assert_eq!(super::strip_path("C:/this/is/a/test/path/with/a/dir/at/the/end")?,"end","strip path failed to strip the end of a rust path, with a dir/extensionless file at the end");
+        assert_eq!(super::strip_path("/this/is/a/test/path/with/a/dir/at/the/end")?,"end","strip path failed to strip the end of a rust path, with a dir/extensionless file at the end");
+        #[cfg(target_family = "windows")]
         assert_eq!(
             super::strip_path(
                 "C:\\this\\is\\a\\test\\path\\with\\a\\file\\at\\the\\end\\file.txt"
@@ -96,7 +99,7 @@ mod test {
             "strip path failed to strip the end of a win path, with a file at the end"
         );
         assert_eq!(
-            super::strip_path("C:/this/is/a/test/path/with/a/file/at/the/end/file.txt")?,
+            super::strip_path("/this/is/a/test/path/with/a/file/at/the/end/file.txt")?,
             "file.txt",
             "strip path failed to strip the end of a rust path, with a file at the end"
         );

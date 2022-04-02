@@ -3,7 +3,7 @@ mod macros;
 
 use crate::{strip_path, Injector, Result};
 use macros::check_ptr;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 
 use log::{debug, error, info, trace, warn};
 use pelite::{Pod, Wrap};
@@ -436,7 +436,7 @@ where
     T: Fn(F) -> u64,
     C: Fn(&String) -> bool,
 {
-    move |i2, v| match str_from_wide_str(v.as_slice()) {
+    move |i2, v| match str_from_wide_str(crate::trim_wide_str(v).as_slice()) {
         Ok(s) => {
             if cmp(&s) {
                 Some((s, f(i2)))
@@ -451,7 +451,7 @@ where
 //todo: make the second function call better
 fn cmp<P: AsRef<Path>>(name: P) -> impl Fn(&dyn AsRef<Path>) -> bool {
     move |s| {
-        return name.as_ref().ends_with(s) || s.as_ref().ends_with(&name);
+        return name.as_ref().ends_with(&s) || s.as_ref().ends_with(&name);
     }
 }
 
@@ -586,8 +586,12 @@ mod test {
         //Simple case
         {
             let f = super::cmp("test");
-            assert!(f(&&"test"));
-            assert!(!f(&&"not test"));
+            assert!(f(&"test"));
+            assert!(!f(&"not test"));
+            let f = super::cmp("KERNEL32.DLL");
+            assert!(f(&&"C:\\Windows\\System32\\KERNEL32.DLL".to_string()));
+            let f = super::cmp("ntdll.dll");
+            assert!(f(&&"C:\\Windows\\SYSTEM32\\ntdll.dll".to_string()));
         }
         //complicated paths
         {
@@ -652,7 +656,7 @@ mod test {
     #[test]
     fn get_module() {
         {
-            let r = super::get_module("KERNEL32.DLL", super::process::Process::self_proc());
+            let r = super::get_module("ntdll.dll", super::process::Process::self_proc());
             assert!(r.is_ok(), "normal get_module err:{}", r.unwrap_err());
         }
         #[cfg(feature = "ntdll")]
