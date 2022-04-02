@@ -1,4 +1,4 @@
-use crate::platforms::platform::macros::{check_ptr, err};
+use super::macros::{check_ptr, err};
 use crate::Result;
 use log::{debug, error, info, trace, warn};
 use once_cell::sync::OnceCell;
@@ -103,13 +103,7 @@ impl Drop for Process {
         trace!("Cleaning Process Handle");
         if unsafe { CloseHandle(self.proc as HANDLE) } == FALSE {
             error!("Error during Process Handle cleanup!");
-            //Supress unused_must_use warning. This is intended, but one cannot use allow, to supress this?
-            //todo: a bit hacky? Is there a better way, to achieve something similar?
-            crate::platforms::platform::macros::void_res(
-                crate::platforms::platform::macros::err::<String>(
-                    "CloseHandle of ".to_string() + std::stringify!($name),
-                ),
-            );
+            err::<String>("CloseHandle of ".to_string() + std::stringify!($name));
         }
     }
 }
@@ -121,5 +115,21 @@ impl Display for Process {
             "(proc:{:x},pid: {},perms:{:x}, wow:{:#?})",
             self.proc as usize, self.pid, self.perms, self.wow
         )
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use winapi::um::winnt::PROCESS_ALL_ACCESS;
+
+    #[test]
+    fn new() {
+        let r = super::Process::new(std::process::id(), PROCESS_ALL_ACCESS);
+        assert!(r.is_ok(), "{}", r.unwrap_err());
+    }
+
+    #[test]
+    fn has_perm() {
+        assert!(super::Process::self_proc().has_perm(PROCESS_ALL_ACCESS))
     }
 }

@@ -1,5 +1,5 @@
+use super::macros::err;
 use crate::error::Error;
-use crate::platforms::platform::macros::err;
 use crate::Result;
 use log::{info, trace};
 use std::ops::Deref;
@@ -64,13 +64,7 @@ impl Drop for Thread {
         trace!("Cleaning Thread Handle");
         if unsafe { winapi::um::handleapi::CloseHandle(self.thread) } == FALSE {
             log::error!("Error during cleanup!");
-            //Supress unused_must_use warning. This is intended, but one cannot use allow, to supress this?
-            //todo: a bit hacky? Is there a better way, to achieve something similar?
-            crate::platforms::platform::macros::void_res(
-                crate::platforms::platform::macros::err::<String>(
-                    "CloseHandle of Thread".to_string(),
-                ),
-            );
+            err::<String>("CloseHandle of Thread".to_string());
         }
     }
 }

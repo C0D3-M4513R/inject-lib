@@ -1,8 +1,11 @@
 //#![cfg_attr(feature = "nightly", feature(asm,global_asm, asm_const))]
 
+extern crate core;
+
 use log::{debug, trace, warn};
 use std::path::PathBuf;
 ///This struct will expose certain module private functions, to actually use the api.
+#[derive(Debug, Clone)]
 pub struct Injector<'a> {
     pub dll: &'a str,
     pub pid: u32,
@@ -54,4 +57,62 @@ pub fn trim_wide_str(mut v: Vec<u16>) -> Vec<u16> {
         v.pop();
     }
     return v;
+}
+
+#[cfg(test)]
+mod test {
+    ///This string contains a bunch of special chars, to test methods operating on strings.
+    pub const str:&str = "This is just any string, since we are not testing anything else, other than setting the dll.!'\r\n\t%$§\"{\\[()]}=?´`öäü^°,.-;:_#+*~<>|³²@";
+
+    use crate::Result;
+    #[test]
+    fn trim_vec() {
+        let buf: Vec<u16> = (0..u16::MAX).collect();
+        let mut buf2 = buf.clone();
+        buf2.append(&mut [0u16; 100].to_vec());
+
+        assert_eq!(super::trim_wide_str(buf2), buf);
+    }
+
+    #[test]
+    fn strip_path() -> Result<()> {
+        assert_eq!(
+            super::strip_path("C:\\this\\is\\a\\test\\path\\with\\a\\dir\\at\\the\\end\\")?,
+            "end",
+            "strip path failed to strip the end of a win path, with a dir at the end"
+        );
+        assert_eq!(
+            super::strip_path("C:/this/is/a/test/path/with/a/dir/at/the/end/")?,
+            "end",
+            "strip path failed to strip the end of a rust path, with a dir at the end"
+        );
+        assert_eq!(super::strip_path("C:\\this\\is\\a\\test\\path\\with\\a\\dir\\at\\the\\end")?,"end","strip path failed to strip the end of a win path, with a dir/extensionless file at the end");
+        assert_eq!(super::strip_path("C:/this/is/a/test/path/with/a/dir/at/the/end")?,"end","strip path failed to strip the end of a rust path, with a dir/extensionless file at the end");
+        assert_eq!(
+            super::strip_path(
+                "C:\\this\\is\\a\\test\\path\\with\\a\\file\\at\\the\\end\\file.txt"
+            )?,
+            "file.txt",
+            "strip path failed to strip the end of a win path, with a file at the end"
+        );
+        assert_eq!(
+            super::strip_path("C:/this/is/a/test/path/with/a/file/at/the/end/file.txt")?,
+            "file.txt",
+            "strip path failed to strip the end of a rust path, with a file at the end"
+        );
+        Ok(())
+    }
+    #[test]
+    fn set_dll() {
+        let mut inj = super::Injector::default();
+        inj.set_dll(str);
+        assert_eq!(inj.dll, str, "Setter did not correctly set the dll string");
+    }
+    #[test]
+    fn set_pid() {
+        let mut inj = super::Injector::default();
+        const pid: u32 = 0;
+        inj.set_pid(pid);
+        assert_eq!(inj.pid, pid, "Setter did not correctly set the pid");
+    }
 }

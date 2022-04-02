@@ -9,7 +9,7 @@ use log::{debug, error, info, trace, warn};
 use pelite::{Pod, Wrap};
 use std::mem::size_of;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use winapi::shared::minwindef::{DWORD, FALSE, MAX_PATH};
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
 use winapi::um::processthreadsapi::CreateRemoteThread;
@@ -34,9 +34,9 @@ mod thread;
 use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
 
 use crate::error::Error;
-use crate::platforms::platform::mem::MemPage;
-use crate::platforms::platform::process::Process;
-use crate::platforms::platform::thread::Thread;
+use mem::MemPage;
+use process::Process;
+use thread::Thread;
 
 ///This function builds a String, from a WTF-encoded buffer.
 pub fn str_from_wide_str(v: &[u16]) -> Result<String> {
@@ -49,15 +49,13 @@ pub fn str_from_wide_str(v: &[u16]) -> Result<String> {
 impl<'a> Injector<'a> {
     ///This Function will find all currently processes, with a given name.
     ///Even if no processes are found, an empty Vector should return.
-    pub fn find_pid(name: &str) -> Result<Vec<u32>> {
+    pub fn find_pid<P: AsRef<Path>>(name: P) -> Result<Vec<u32>> {
+        let name = name.as_ref();
         Self::find_pid_selector(|p| {
             return match str_from_wide_str(crate::trim_wide_str(p.szExeFile.to_vec()).as_slice()) {
                 Ok(str) => {
-                    debug!("Checking {} against {}", str, name);
-                    if let Ok(s) = strip_path(str.as_str()) {
-                        return s.as_str() == name;
-                    }
-                    false
+                    debug!("Checking {} against {}", str, name.to_string_lossy());
+                    return name.ends_with(str.as_str());
                 }
                 Err(e) => {
                     warn!("Skipping check of process. Can't construct string, to compare against. Err:{:#?}",e);
@@ -90,7 +88,7 @@ impl<'a> Injector<'a> {
             self.pid,
             |m| {
                 if let Ok(v) = str_from_wide_str(&m.szModule) {
-                    if cmp(&name)(v.as_str()) {
+                    if cmp(&name)(&&v) {
                         Some(m.hModule)
                     } else {
                         None
@@ -239,7 +237,7 @@ impl<'a> Injector<'a> {
             if self_is_under_wow && !pid_is_under_wow {
                 let ntdll = ntdll::NTDLL::new()?;
                 let (path, base) = ntdll.get_ntdll_base_addr(pid_is_under_wow, &proc)?;
-                let rva = get_dll_function(path, "RtlCreateUserThread".to_string())?;
+                let rva = get_dll_export(path.as_str(), "RtlCreateUserThread".to_string())?;
                 let va = base + rva as u64;
                 let (r, t, _c) = unsafe {
                     crate::platforms::x86::exec(
@@ -428,68 +426,19 @@ fn get_windir<'a>() -> Result<&'a String> {
     Ok(str)
 }
 
-///This gets the Relative Virtual Address (rva) of the function name, from a ntdll file.
-///If explicit_x86 is true, this function will ALWAYS try to open the x86 ntdll in the SysWOW64 folder.
-///Otherwise if native is true, this function will try to open whatever ntdll is native to the system.
-///(if you have a x86 install this will pick x86. if you have a x64 install this will  pick x64)
-///If both explicit_x86 and native are false, this function will use whatever ntdll is in System32.
-fn get_dll_function(path: String, name: String) -> Result<u32> {
-    //We need to replace System32, by Sysnative, in case we are running under WOW, because Windows will otherwise redirect all our file access.
-
-    //One can also use the following methods: https://docs.microsoft.com/en-us/windows/win32/api/wow64apiset/nf-wow64apiset-wow64disablewow64fsredirection,https://docs.microsoft.com/en-us/windows/win32/api/wow64apiset/nf-wow64apiset-wow64revertwow64fsredirection
-    //I am not using those methods, because that WILL have impacts, if those functions fail.
-    //On failing to re-enable Filesystem redirection, I'd have to panic, since a x86 program, using this library, might do unwanted things.
-    //todo: to function
-
-    // let ntdll_path = if self_is_under_wow{
-    // 	let str = get_windir()?.clone();
-    // 	ntdll_path.replace(&(str.clone() + &"\\SYSTEM32".to_string()),&(str + &"\\Sysnative".to_string()))
-    // }else{
-    // 	ntdll_path
-    // };
-    // check_ptr!(Wow64DisableWow64FsRedirection(&mut par as *mut PVOID),|v|v==0);
-
-    //avoid filesystem redirection by WOW.
-    let str = get_windir()?.clone();
-    let path = if Process::self_proc().is_under_wow()? {
-        path.replace(
-            &(str.clone() + &"\\SYSTEM32".to_string()),
-            &(str + &"\\Sysnative".to_string()),
-        )
-    } else {
-        path
-    };
-    debug_assert!(
-        std::fs::canonicalize(&path).is_ok(),
-        "parsing {} failed",
-        path
-    );
-    let k32 = std::fs::read(&path)?;
-    trace!("read file correctly");
-    // check_ptr!(Wow64RevertWow64FsRedirection(par),|v|v==0);
-
-    let dll_parsed = pelite::PeFile::from_bytes(k32.as_slice())?;
-    trace!("Parsed dll file!");
-    let rva = dll_parsed.get_export_by_name(&name)?.symbol().unwrap();
-    trace!("Got RTLCreateUserThread export at {:x}", rva);
-    Ok(rva)
-}
 ///Takes in a Name. From that it returns a matcher
 ///Takes a Selector, and returns a type, for use with get_module_in_proc and get_module_in_pid
 ///name specifies, what module to look for.
 ///f processes the other input from other functions
 //todo: does this bring a performance benefit?
-fn predicate<'a, T: 'a, F: 'a, C: 'a>(
-    f: T,
-    cmp: C,
-) -> impl Fn(F, Vec<u16>) -> Option<(String, u64)> + 'a
+fn predicate<T, F, C>(f: T, cmp: C) -> impl Fn(F, Vec<u16>) -> Option<(String, u64)>
 where
     T: Fn(F) -> u64,
-    C: Fn(&str) -> bool,
+    C: Fn(&String) -> bool,
 {
     move |i2, v| match str_from_wide_str(v.as_slice()) {
         Ok(s) => {
-            if cmp(s.as_str()) {
+            if cmp(&s) {
                 Some((s, f(i2)))
             } else {
                 None
@@ -499,24 +448,35 @@ where
     }
 }
 ///Returns a function, which compares a &str against a name
-fn cmp(name: impl ToString) -> impl Fn(&str) -> bool {
+//todo: make the second function call better
+fn cmp<P: AsRef<Path>>(name: P) -> impl Fn(&dyn AsRef<Path>) -> bool {
     move |s| {
-        if let Ok(string) = strip_path(s) {
-            string == name.to_string()
-        } else {
-            false
-        }
+        return name.as_ref().ends_with(s) || s.as_ref().ends_with(&name);
     }
 }
 
+///Override check, to use in get_module, if we are in testing mode.
+///This is only for testing mode.
+#[cfg(test)]
+static mut GET_MODULE_USE_NTDLL: bool = false;
+
 ///Gets the base address of where a dll is loaded within a process.
 ///The dll is identified by name. name is checked against the whole file name.
-fn get_module(name: &str, proc: &Process) -> Result<(String, u64)> {
+fn get_module<P: AsRef<Path>>(name: P, proc: &Process) -> Result<(String, u64)> {
     let cmp = cmp(name);
-    if !process::Process::self_proc().is_under_wow()? || proc.is_under_wow()? {
+    #[cfg(not(test))]
+    let ntdll = !process::Process::self_proc().is_under_wow()? || proc.is_under_wow()?;
+    #[cfg(test)]
+    let ntdll = unsafe { !GET_MODULE_USE_NTDLL };
+    if ntdll {
         match get_module_in_pid(
             proc.get_pid(),
-            |m| predicate(|m: &MODULEENTRY32W| m.modBaseAddr as u64, &cmp)(m, m.szExePath.to_vec()),
+            |m| {
+                predicate(|m: &MODULEENTRY32W| m.modBaseAddr as u64, |x| (&cmp)(&x))(
+                    m,
+                    m.szExePath.to_vec(),
+                )
+            },
             None,
         ) {
             Ok(r) => return Ok(r),
@@ -544,13 +504,17 @@ fn get_module(name: &str, proc: &Process) -> Result<(String, u64)> {
                         Wrap::T32(w) => w.DllBase as u64,
                         Wrap::T64(w) => w.DllBase as u64,
                     },
-                    &cmp,
+                    |x| (&cmp)(&x),
                 ),
             );
         }
     }
 }
 ///Gets a function export from the dll at the specified path (even under WOW), and return the rva, if found.
+///
+///This gets the Relative Virtual Address (rva) of the function name, from a pe-file.
+///This function will make sure, that all requests, that according to path should go to %windir%/System32, actually go there.
+///If you want to get an export from a 32-bit dll under 64-bit windows specify %windir%/SysWOW64.
 fn get_dll_export(name: &str, path: String) -> Result<u32> {
     let path = if process::Process::self_proc().is_under_wow()? {
         let str = get_windir()?.clone();
@@ -571,4 +535,144 @@ fn get_dll_export(name: &str, path: String) -> Result<u32> {
     let rva = dll_parsed.get_export_by_name(name)?.symbol().unwrap();
     trace!("Found {} at rva:{} in dll {}", name, rva, path);
     Ok(rva)
+}
+
+#[cfg(test)]
+mod test {
+    use crate::{Injector, Result};
+    use std::ffi::{OsStr, OsString};
+    use std::os::windows::ffi::OsStrExt;
+    use winapi::um::tlhelp32::MODULEENTRY32W;
+
+    #[test]
+    fn get_windir() -> Result<()> {
+        let r = super::get_windir();
+        assert!(r.is_ok(), "get_windir returned Err({})", r.unwrap_err());
+        let f = std::fs::read_dir(r.unwrap());
+        assert!(
+            f.is_ok(),
+            "Couldn't read Windows dir. Error is {}",
+            f.unwrap_err()
+        );
+        //can't do too much in this test sadly, since we can't assume a "normal" windows environment.
+        //Testing if the string returned from get_windir is the most I can do here.
+        Ok(())
+    }
+
+    #[test]
+    fn get_dll_export() -> Result<()> {
+        let mut path = std::path::PathBuf::from(super::get_windir()?);
+        path.push("System32"); //Cannot assume, that everyone has WOW installed.
+        {
+            let mut ntdll = path.clone();
+            ntdll.push("ntdll.dll");
+            let r =
+                super::get_dll_export("RtlCreateUserThread", ntdll.to_str().unwrap().to_string());
+            assert!(r.is_ok(), "get_dll_export returned err:{}", r.unwrap_err());
+            r?;
+        }
+        {
+            let mut kernel32 = path;
+            kernel32.push("kernel32.dll");
+            let r = super::get_dll_export("LoadLibraryW", kernel32.to_str().unwrap().to_string());
+            assert!(r.is_ok(), "get_dll_export returned err:{}", r.unwrap_err());
+            r?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cmp() {
+        //Simple case
+        {
+            let f = super::cmp("test");
+            assert!(f(&&"test"));
+            assert!(!f(&&"not test"));
+        }
+        //complicated paths
+        {
+            let f = vec![
+                super::cmp("C:\\this\\is\\a\\test\\path\\with\\a\\dir\\at\\the\\end\\"),
+                super::cmp("C:\\this\\is\\a\\test\\path\\with\\a\\dir\\at\\the\\end"),
+                super::cmp("C:/this/is/a/test/path/with/a/dir/at/the/end/"),
+                super::cmp("C:/this/is/a/test/path/with/a/dir/at/the/end"),
+            ];
+            for f in f {
+                assert!(f(&"end"));
+                assert!(f(&"the\\end"));
+                assert!(f(&"the/end"));
+                assert!(f(&"at/the\\end"));
+                assert!(f(&"at\\the/end"));
+            }
+        }
+    }
+
+    #[test]
+    fn str_from_wide_str() -> Result<()> {
+        //test empty string
+        assert_eq!(super::str_from_wide_str(vec![].as_slice())?, "".to_string());
+        //Test just about every special char I could think of.
+        let wide_str: Vec<u16> = OsString::from(crate::test::str.to_string())
+            .as_os_str()
+            .encode_wide()
+            .collect();
+        assert_eq!(
+            super::str_from_wide_str(wide_str.as_slice())?,
+            crate::test::str.to_string()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn predicate() {
+        //If nothing matches, we should get NONE back
+        assert_eq!(super::predicate(|_| 0, |_| false)((), vec![]), None);
+        //If something matches, we should get a result
+        assert_eq!(
+            super::predicate(|_| 0, |_| true)((), vec![]),
+            Some(("".to_string(), 0))
+        );
+    }
+
+    #[test]
+    fn get_module_in_pid() {
+        let o = super::get_module_in_pid(
+            std::process::id(),
+            |m| {
+                super::predicate(
+                    |m: &MODULEENTRY32W| m.modBaseAddr as u64,
+                    |x| super::cmp("kernel32.dll")(&x),
+                )(m, m.szModule.to_vec())
+            },
+            None,
+        );
+    }
+
+    #[test]
+    fn get_module() {
+        {
+            let r = super::get_module("KERNEL32.DLL", super::process::Process::self_proc());
+            assert!(r.is_ok(), "normal get_module err:{}", r.unwrap_err());
+        }
+        #[cfg(feature = "ntdll")]
+        {
+            unsafe { super::GET_MODULE_USE_NTDLL = true };
+            let r = super::get_module("KERNEL32.DLL", super::process::Process::self_proc());
+            assert!(r.is_ok(), "ntdll get_module:{}", r.unwrap_err());
+        }
+    }
+
+    #[test]
+    fn find_pid() -> Result<()> {
+        let exe = std::env::current_exe()?;
+        let i = Injector::find_pid(exe);
+        assert!(i.is_ok(), "{}", i.unwrap_err());
+        assert!(
+            i?.contains(&std::process::id()),
+            "The result did not contain our current process id."
+        );
+
+        Ok(())
+    }
 }

@@ -2,8 +2,8 @@ use crate::Result;
 use std::fmt::{Display, Formatter};
 use winapi::shared::minwindef::{FALSE, LPCVOID, LPVOID};
 
-use crate::platforms::platform::macros::{err, void_res};
-use crate::platforms::platform::process::Process;
+use super::macros::{err, void_res};
+use super::process::Process;
 use log::{debug, error, info, trace, warn};
 use winapi::um::memoryapi::{VirtualAllocEx, VirtualFreeEx, WriteProcessMemory};
 use winapi::um::winnt::{
@@ -21,7 +21,14 @@ pub struct MemPage<'a> {
 impl<'a> MemPage<'a> {
     ///Create a new MemoryPage.
     ///exec specifies, if the contents of the MemoryPage should be able to be executed or not.
+    ///If size is 0, it returns an error. First of all windows does not like it.
+    ///If we were to return something, addr would not be valid.
     pub fn new(proc: &'a Process, size: usize, exec: bool) -> Result<Self> {
+        if size == 0 {
+            return Err(crate::error::Error::Io(std::io::Error::from(
+                std::io::ErrorKind::InvalidInput,
+            )));
+        }
         //https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualallocex
         if !proc.has_perm(PROCESS_VM_OPERATION) {
             return Err(crate::error::Error::Io(std::io::Error::from(
@@ -78,9 +85,7 @@ impl<'a> MemPage<'a> {
                 &mut n as *mut usize,
             ) == FALSE
         } {
-            return Err(crate::platforms::platform::macros::err(
-                "WriteProcessMemory",
-            ));
+            return Err(err("WriteProcessMemory"));
         }
         debug_assert!(n == buffer.len());
         Ok(n)
@@ -114,11 +119,48 @@ impl<'a> Drop for MemPage<'a> {
         trace!("Releasing VirtualAlloc'd Memory");
         if unsafe { VirtualFreeEx(self.proc.get_proc(), self.addr, 0, MEM_RELEASE) } == FALSE {
             error!("Error during cleanup! VirtualFreeEx with MEM_RELEASE should not fail according to doc, but did anyways. A memory page will stay allocated. Addr:{:x},size:{:x}",self.addr as usize,self.size);
-            //Supress unused_must_use warning. This is intended, but one cannot use allow, to supress this?
-            //todo: a bit hacky? Is there a better way, to achieve something similar?
-            void_res(err::<&str>("VirtualFreeEx of VirtualAllocEx"));
-            //Do not panic here, since it could cause to an abort.
-            // panic!("Error during cleanup")
+            err::<&str>("VirtualFreeEx of VirtualAllocEx");
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::Result;
+
+    #[test]
+    fn zero_size_page() {
+        let proc = super::super::process::Process::self_proc();
+        let m = super::MemPage::new(proc, 0, false);
+        assert!(
+            m.is_err(),
+            "A zero sized allocation is not sensible. Also windows does not allow it."
+        )
+    }
+
+    #[test]
+    fn check_proc() -> Result<()> {
+        let proc = super::super::process::Process::self_proc();
+        let m = super::MemPage::new(proc, 1, false)?;
+        assert!(m.check_proc(proc));
+        Ok(())
+    }
+
+    #[test]
+    fn new_and_write() -> Result<()> {
+        let buf: Vec<u8> = (0..255).collect();
+        //write mem
+        let mut m = super::MemPage::new(
+            super::super::process::Process::self_proc(),
+            buf.len(),
+            false,
+        )?;
+        let w = m.write(buf.as_slice())?;
+        assert!(w >= buf.len());
+        //and read it again
+        let rb: *const [u8; 255] = m.get_address() as *const [u8; 255];
+        let rb = unsafe { *rb };
+        assert_eq!(rb, buf.as_slice());
+        Ok(())
     }
 }

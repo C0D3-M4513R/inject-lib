@@ -1,11 +1,10 @@
 #![cfg(feature = "ntdll")]
 mod types; //These are exclusively ntdll types
 
+use super::macros::{check_ptr, err};
+use super::process::Process;
+use super::{get_windir, predicate, str_from_wide_str};
 use crate::error::Error;
-use crate::platforms::platform::macros::{check_ptr, err};
-pub use crate::platforms::platform::ntdll::types::LDR_DATA_TABLE_ENTRY64;
-use crate::platforms::platform::process::Process;
-use crate::platforms::platform::{get_windir, predicate, str_from_wide_str};
 use crate::Result;
 use log::{debug, info, trace, warn};
 use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
@@ -14,6 +13,7 @@ use pelite::Wrap;
 use std::ffi::OsStr;
 use std::ops::Shl;
 use std::os::windows::ffi::OsStrExt;
+pub use types::LDR_DATA_TABLE_ENTRY64;
 use winapi::shared::basetsd::{DWORD64, PDWORD64, ULONG64};
 use winapi::shared::minwindef::{HMODULE, PULONG, ULONG};
 use winapi::shared::ntdef::{NTSTATUS, PVOID};
@@ -22,6 +22,7 @@ use winapi::um::winnt::{HANDLE, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED
 ///This class represents the NTDLL module/dll from windows.
 ///This class is focused on having the least possible NTDLL function calls,
 ///whilst still preserving functionality with all use cases.
+#[derive(Debug)]
 pub(crate) struct NTDLL {
     handle: usize,
 }
@@ -327,6 +328,7 @@ impl NTDLL {
     ///Windows might sometimes decide, to sometimes just end the entire program randomly, meaning, that this function won't return sometimes.
     ///On other occasions, Windows will return some extraneous value of bytes read.
     ///In those cases, this function will Panic.
+    //todo:add a test for this?
     unsafe fn query_process_information<T>(
         &self,
         proc: &Process,
@@ -410,5 +412,61 @@ impl Drop for NTDLL {
             warn!("Error whilst unloading NTDLL.dll. This is not actually that bad, since it is present in every Process anyways.");
             err("FreeLibrary");
         };
+    }
+}
+#[cfg(test)]
+mod test {
+    use super::NTDLL;
+    use crate::Result;
+
+    #[test]
+    fn new() -> Result<()> {
+        let ntdll = NTDLL::new();
+        assert!(ntdll.is_ok(), "{}", ntdll.unwrap_err());
+        Ok(())
+    }
+
+    #[test]
+    fn get_module_in_proc() -> Result<()> {
+        let proc = super::super::process::Process::self_proc();
+        let ntdll = NTDLL::new()?;
+        let (b, m) = unsafe {
+            ntdll.get_module_in_proc(
+                proc,
+                super::predicate(
+                    |x: pelite::Wrap<
+                        ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32,
+                        super::types::LDR_DATA_TABLE_ENTRY64,
+                    >| match x {
+                        pelite::Wrap::T32(x) => x.DllBase as u64,
+                        pelite::Wrap::T64(x) => x.DllBase as u64,
+                    },
+                    |x| super::super::cmp("KERNEL32.DLL")(&x),
+                ),
+            )
+        }?;
+        Ok(())
+    }
+    #[test]
+    fn no_find_get_module_in_proc() -> Result<()> {
+        const RECURSION:&str = "We looped through the whole InLoadOrderModuleList, but still have no match. Aborting, because this would end in an endless loop.";
+        let proc = super::super::process::Process::self_proc();
+        let ntdll = NTDLL::new()?;
+        let x = unsafe { ntdll.get_module_in_proc(proc, |_, _| None::<()>) };
+        assert!(x.is_err(),"get_module_in_proc found something, eventhough it shouldn't have. We asked for NOTHING.");
+        assert_eq!(
+            x.unwrap_err(),
+            crate::error::Error::Unsuccessful(Some(RECURSION.to_string()))
+        );
+        Ok(())
+    }
+    #[test]
+    fn read_memory() -> Result<()> {
+        let buf: Vec<u8> = (0..255).collect();
+        let proc = super::super::process::Process::self_proc();
+        let ntdll = NTDLL::new()?;
+        let r = unsafe { ntdll.read_virtual_mem_fn(proc, buf.as_ptr() as u64, buf.len()) }?;
+        assert_eq!(r, buf);
+        Ok(())
     }
 }
