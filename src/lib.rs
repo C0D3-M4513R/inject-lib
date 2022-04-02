@@ -1,5 +1,5 @@
 //#![cfg_attr(feature = "nightly", feature(asm,global_asm, asm_const))]
-
+#[warn(missing_docs)]
 extern crate core;
 
 use log::{debug, trace, warn};
@@ -62,7 +62,7 @@ pub fn trim_wide_str(mut v: Vec<u16>) -> Vec<u16> {
 #[cfg(test)]
 mod test {
     ///This string contains a bunch of special chars, to test methods operating on strings.
-    pub const str:&str = "This is just any string, since we are not testing anything else, other than setting the dll.!'\r\n\t%$§\"{\\[()]}=?´`öäü^°,.-;:_#+*~<>|³²@";
+    pub const STR:&str = "This is just any string, since we are not testing anything else, other than setting the dll.!'\r\n\t%$§\"{\\[()]}=?´`öäü^°,.-;:_#+*~<>|³²@";
 
     use crate::Result;
     #[test]
@@ -108,14 +108,14 @@ mod test {
     #[test]
     fn set_dll() {
         let mut inj = super::Injector::default();
-        inj.set_dll(str);
-        assert_eq!(inj.dll, str, "Setter did not correctly set the dll string");
+        inj.set_dll(STR);
+        assert_eq!(inj.dll, STR, "Setter did not correctly set the dll string");
     }
     #[test]
     fn set_pid() {
         let mut inj = super::Injector::default();
-        const pid: u32 = 0;
-        inj.set_pid(pid);
-        assert_eq!(inj.pid, pid, "Setter did not correctly set the pid");
+        const PID: u32 = 0;
+        inj.set_pid(PID);
+        assert_eq!(inj.pid, PID, "Setter did not correctly set the PID");
     }
 }

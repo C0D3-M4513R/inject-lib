@@ -462,6 +462,7 @@ static mut GET_MODULE_USE_NTDLL: bool = false;
 
 ///Gets the base address of where a dll is loaded within a process.
 ///The dll is identified by name. name is checked against the whole file name.
+///if the process has a pseudo-handle, the ntdll methods will not run.
 fn get_module<P: AsRef<Path>>(name: P, proc: &Process) -> Result<(String, u64)> {
     let cmp = cmp(name);
     #[cfg(not(test))]
@@ -543,6 +544,7 @@ mod test {
     use std::ffi::{OsStr, OsString};
     use std::os::windows::ffi::OsStrExt;
     use winapi::um::tlhelp32::MODULEENTRY32W;
+    use winapi::um::winnt::PROCESS_ALL_ACCESS;
 
     #[test]
     fn get_windir() -> Result<()> {
@@ -616,13 +618,13 @@ mod test {
         //test empty string
         assert_eq!(super::str_from_wide_str(vec![].as_slice())?, "".to_string());
         //Test just about every special char I could think of.
-        let wide_str: Vec<u16> = OsString::from(crate::test::str.to_string())
+        let wide_str: Vec<u16> = OsString::from(crate::test::STR.to_string())
             .as_os_str()
             .encode_wide()
             .collect();
         assert_eq!(
             super::str_from_wide_str(wide_str.as_slice())?,
-            crate::test::str.to_string()
+            crate::test::STR.to_string()
         );
 
         Ok(())
@@ -654,7 +656,7 @@ mod test {
     }
 
     #[test]
-    fn get_module() {
+    fn get_module() -> Result<()> {
         {
             let r = super::get_module("ntdll.dll", super::process::Process::self_proc());
             assert!(r.is_ok(), "normal get_module err:{}", r.unwrap_err());
@@ -662,9 +664,11 @@ mod test {
         #[cfg(feature = "ntdll")]
         {
             unsafe { super::GET_MODULE_USE_NTDLL = true };
-            let r = super::get_module("KERNEL32.DLL", super::process::Process::self_proc());
+            let proc = super::process::Process::new(std::process::id(), PROCESS_ALL_ACCESS)?;
+            let r = super::get_module("KERNEL32.DLL", &proc);
             assert!(r.is_ok(), "ntdll get_module:{}", r.unwrap_err());
         }
+        Ok(())
     }
 
     #[test]

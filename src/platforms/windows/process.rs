@@ -32,6 +32,8 @@ impl Process {
             wow: Default::default(),
         })
     }
+    ///Constructs a Process, using a pseudo-handle.
+    ///That is a special type of handle. It does not actually exists, but just works. (except in ntdll)
     pub fn self_proc() -> &'static Self {
         static PRC: OnceCell<Process> = OnceCell::new();
         PRC.get_or_init(|| Process {
@@ -40,6 +42,10 @@ impl Process {
             perms: PROCESS_ALL_ACCESS,
             wow: Default::default(),
         })
+    }
+    ///Checks, if this process has real handle
+    pub fn has_real_handle(&self) -> bool {
+        self.get_proc() != unsafe { GetCurrentProcess() }
     }
     ///Returns true, if the supplied process-handle is running under WOW, otherwise false.
     ///# Safety
@@ -69,6 +75,8 @@ impl Process {
             .copied()
     }
     ///Returns true, if the supplied process-handle is running under WOW, otherwise false.
+    #[must_use]
+    //todo: where can we replace Self::self_proc().is_under_wow() with cfg statements? where is it useful?
     pub fn is_under_wow(&self) -> Result<bool> {
         if self.has_perm(PROCESS_QUERY_INFORMATION)
             || self.has_perm(PROCESS_QUERY_LIMITED_INFORMATION)

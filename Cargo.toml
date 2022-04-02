@@ -42,7 +42,6 @@ pelite = "0.9" #to read/parse dll information. #todo: maybe replace with exe-rs?
 log = "0.4"
 once_cell="1.8"
 
-
 [features]
 default=[]
 nightly=[]
