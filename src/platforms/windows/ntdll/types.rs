@@ -3,7 +3,6 @@ use ntapi::ntapi_base::KPRIORITY;
 use ntapi::ntldr::LDR_DLL_LOAD_REASON;
 use ntapi::ntpsapi::GDI_HANDLE_BUFFER64;
 use winapi::shared::basetsd::ULONG64;
-use winapi::shared::minwindef::BOOL;
 use winapi::shared::ntdef::{BOOLEAN, CHAR, NTSTATUS, UCHAR, ULONG, UNICODE_STRING64, USHORT};
 use winapi::um::winnt::{
     FLS_MAXIMUM_AVAILABLE, HANDLE, LARGE_INTEGER, LIST_ENTRY64, PVOID64, ULARGE_INTEGER, ULONGLONG,

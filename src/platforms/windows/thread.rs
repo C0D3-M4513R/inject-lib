@@ -8,11 +8,12 @@ use winapi::shared::ntdef::HANDLE;
 use winapi::um::synchapi::WaitForSingleObject;
 use winapi::um::winbase::INFINITE;
 
+///This class represents a Thread handle.
+///It exists mostly, to have a destructor for a Handle.
 #[repr(transparent)]
 pub struct Thread {
     thread: HANDLE,
 }
-
 impl Thread {
     ///# Safety
     ///User must ensure, that thread is a valid Thread handle.
@@ -70,8 +71,6 @@ impl Drop for Thread {
                     "CloseHandle of Thread".to_string(),
                 ),
             );
-            //Panic's during drop could lead to abort.
-            // panic!("Error during cleanup");
         }
     }
 }

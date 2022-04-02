@@ -2,34 +2,35 @@
 mod types; //These are exclusively ntdll types
 
 use crate::error::Error;
-use crate::platforms::platform::macros::check_ptr;
+use crate::platforms::platform::macros::{check_ptr, err};
 pub use crate::platforms::platform::ntdll::types::LDR_DATA_TABLE_ENTRY64;
 use crate::platforms::platform::process::Process;
 use crate::platforms::platform::{get_windir, predicate, str_from_wide_str};
 use crate::Result;
 use log::{debug, info, trace, warn};
-use ntapi::ntapi_base::{CLIENT_ID, CLIENT_ID64, PCLIENT_ID, PCLIENT_ID64};
-use ntapi::ntpsapi::{NtCreateProcess, NtCreateThread};
-use ntapi::ntrtl::{RtlCreateUserThread, PUSER_THREAD_START_ROUTINE};
 use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
 use once_cell::sync::OnceCell;
 use pelite::Wrap;
-use std::ffi::{c_void, OsStr};
+use std::ffi::OsStr;
 use std::ops::Shl;
 use std::os::windows::ffi::OsStrExt;
 use winapi::shared::basetsd::{DWORD64, PDWORD64, ULONG64};
 use winapi::shared::minwindef::{HMODULE, PULONG, ULONG};
 use winapi::shared::ntdef::{NTSTATUS, PVOID};
-use winapi::um::libloaderapi::{GetProcAddress, LoadLibraryW};
-use winapi::um::winnt::HANDLE;
-
+use winapi::um::libloaderapi::{FreeLibrary, GetProcAddress, LoadLibraryW};
+use winapi::um::winnt::{HANDLE, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION};
+///This class represents the NTDLL module/dll from windows.
+///This class is focused on having the least possible NTDLL function calls,
+///whilst still preserving functionality with all use cases.
 pub(crate) struct NTDLL {
     handle: usize,
 }
 impl NTDLL {
+    ///Get the NTDLL object.
+    ///This class employs the Singleton principle.
     pub(crate) fn new() -> Result<&'static Self> {
-        static inst: OnceCell<NTDLL> = OnceCell::new();
-        inst.get_or_try_init(|| {
+        static INST: OnceCell<NTDLL> = OnceCell::new();
+        INST.get_or_try_init(|| {
             let ntdll: Vec<u16> = OsStr::new("NTDLL.dll\0").encode_wide().collect();
             let handle = check_ptr!(LoadLibraryW(ntdll.as_ptr())) as usize;
             Ok(NTDLL { handle })
@@ -89,15 +90,13 @@ impl NTDLL {
         P: Fn(&Vec<u16>) -> bool,
         E: Fn(Error) -> Result<R>,
     {
-        unsafe {
-            self.get_module_in_proc(proc, |w, v| {
-                if predicate(&v) {
-                    Some(selector(w, &v))
-                } else {
-                    None
-                }
-            })
-        }
+        self.get_module_in_proc(proc, |w, v| {
+            if predicate(&v) {
+                Some(selector(w, &v))
+            } else {
+                None
+            }
+        })
     }
 
     ///Gets a module, by reading the Process Environment Block (PEB), of the process, using ntdll functions.
@@ -295,15 +294,13 @@ impl NTDLL {
         let mut buf: Vec<u8> = Vec::with_capacity(size);
         trace!("reading at address {:x?} {} bytes", addr, size);
         let mut i: u64 = 0;
-        let status = crate::error::Ntdll::new(unsafe {
-            NtReadVirtualMemory(
-                proc.get_proc(),
-                addr,
-                buf.as_mut_ptr() as PVOID,
-                size as u64,
-                &mut i as *mut u64,
-            )
-        });
+        let status = crate::error::Ntdll::new(NtReadVirtualMemory(
+            proc.get_proc(),
+            addr,
+            buf.as_mut_ptr() as PVOID,
+            size as u64,
+            &mut i as *mut u64,
+        ));
         trace!("rvm {},{}/{}", status, i, size);
         //We read i bytes. So we let the Vec know, so it can calculate size and deallocate accordingly, if it wants.
         //Also: This will enable debugger inspection, of the buf, since the debugger will now know, that the vec is initialised.
@@ -338,6 +335,13 @@ impl NTDLL {
     where
         T: Copy,
     {
+        if !proc.has_perm(PROCESS_QUERY_INFORMATION)
+            || !proc.has_perm(PROCESS_QUERY_LIMITED_INFORMATION)
+        {
+            return Err(crate::error::Error::Io(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied,
+            )));
+        }
         //Function prototype, of the NtQueryInformationProcess function in ntdll.
         type FnNtQueryInformationProcess =
             fn(HANDLE, ntapi::ntpsapi::PROCESSINFOCLASS, PVOID, ULONG, PULONG) -> NTSTATUS;
@@ -396,5 +400,15 @@ Report IMMEDIATELY.
         let pbi_ptr: *mut T = std::mem::transmute(buf.as_mut_ptr());
         // trace!("exitstatus:{:x},pebaddress:{:x},baseprio:{:x},upid:{:x},irupid:{:x}",pbi.ExitStatus,pbi.PebBaseAddress,pbi.BasePriority,pbi.UniqueProcessId,pbi.InheritedFromUniqueProcessId);
         Ok(*pbi_ptr)
+    }
+}
+impl Drop for NTDLL {
+    ///Decrement Ntdll module use counter.
+    ///Also invalidates handle.
+    fn drop(&mut self) {
+        if unsafe { FreeLibrary(self.handle as HMODULE) } == 0 {
+            warn!("Error whilst unloading NTDLL.dll. This is not actually that bad, since it is present in every Process anyways.");
+            err("FreeLibrary");
+        };
     }
 }

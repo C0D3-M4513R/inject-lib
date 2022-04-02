@@ -3,44 +3,25 @@ mod macros;
 
 use crate::{strip_path, Injector, Result};
 use macros::check_ptr;
-use std::ffi::{CStr, CString, OsString};
+use std::ffi::OsString;
 
 use log::{debug, error, info, trace, warn};
 use pelite::{Pod, Wrap};
-use std::fmt::{Debug, Display};
 use std::mem::size_of;
-use std::ops::{Add, Deref, Shl, Shr};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
-use std::ptr::{null, null_mut};
-use winapi::ctypes::c_void;
-use winapi::shared::basetsd::{DWORD64, PDWORD64, PULONG64, SIZE_T, ULONG64};
-use winapi::shared::minwindef::{DWORD, FALSE, LPVOID, MAX_PATH};
-use winapi::shared::ntdef::{NTSTATUS, PULONG, PVOID, PVOID64, ULONG, ULONGLONG};
+use winapi::shared::minwindef::{DWORD, FALSE, MAX_PATH};
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
-use winapi::um::libloaderapi::{
-    FreeLibrary, GetModuleHandleA, GetProcAddress, LoadLibraryA, DONT_RESOLVE_DLL_REFERENCES,
-    LOAD_LIBRARY_AS_DATAFILE, LOAD_LIBRARY_AS_IMAGE_RESOURCE,
-};
-use winapi::um::memoryapi::VirtualAlloc;
-use winapi::um::processthreadsapi::{CreateRemoteThread, GetCurrentProcess, OpenProcess};
-use winapi::um::synchapi::WaitForSingleObject;
-use winapi::um::sysinfoapi::{
-    GetNativeSystemInfo, GetSystemWindowsDirectoryA, GetSystemWindowsDirectoryW, SYSTEM_INFO,
-};
+use winapi::um::processthreadsapi::CreateRemoteThread;
+use winapi::um::sysinfoapi::GetSystemWindowsDirectoryW;
 use winapi::um::tlhelp32::{
     CreateToolhelp32Snapshot, Module32FirstW, Module32NextW, Process32FirstW, Process32NextW,
     LPPROCESSENTRY32W, MAX_MODULE_NAME32, MODULEENTRY32W, PROCESSENTRY32W, TH32CS_SNAPMODULE,
     TH32CS_SNAPMODULE32, TH32CS_SNAPPROCESS,
 };
-use winapi::um::winbase::INFINITE;
 use winapi::um::winnt::{
-    BOOLEAN, CONTEXT, HANDLE, IMAGE_FILE_MACHINE_AMD64, IMAGE_FILE_MACHINE_I386,
-    IMAGE_FILE_MACHINE_UNKNOWN, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE,
-    PAGE_READWRITE, PHANDLE, PROCESSOR_ARCHITECTURE_AMD64, PROCESSOR_ARCHITECTURE_INTEL,
-    PROCESS_ALL_ACCESS, PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE,
-    PSECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR, WOW64_CONTEXT, WOW64_FLOATING_SAVE_AREA,
+    PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION, PROCESS_VM_READ,
+    PROCESS_VM_WRITE,
 };
 
 mod mem;
@@ -50,18 +31,14 @@ mod process;
 mod thread;
 
 #[cfg(feature = "ntdll")]
-use ntapi::ntapi_base::CLIENT_ID;
-#[cfg(feature = "ntdll")]
 use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
-use std::thread::{sleep, yield_now};
 
 use crate::error::Error;
-use crate::platforms::platform::macros::{err, void_res};
 use crate::platforms::platform::mem::MemPage;
 use crate::platforms::platform::process::Process;
 use crate::platforms::platform::thread::Thread;
-use once_cell::sync::OnceCell;
 
+///This function builds a String, from a WTF-encoded buffer.
 pub fn str_from_wide_str(v: &[u16]) -> Result<String> {
     OsString::from_wide(v).into_string().map_err(|e| {
         warn!("Couldn't convert widestring, to string. The Buffer contained invalid non-UTF-8 characters . Buf is {:#?}.", e);
@@ -70,6 +47,8 @@ pub fn str_from_wide_str(v: &[u16]) -> Result<String> {
 }
 
 impl<'a> Injector<'a> {
+    ///This Function will find all currently processes, with a given name.
+    ///Even if no processes are found, an empty Vector should return.
     pub fn find_pid(name: &str) -> Result<Vec<u32>> {
         Self::find_pid_selector(|p| {
             return match str_from_wide_str(crate::trim_wide_str(p.szExeFile.to_vec()).as_slice()) {
@@ -87,7 +66,8 @@ impl<'a> Injector<'a> {
             };
         })
     }
-    //todo: use the structs
+    ///This function will attempt, to eject a dll from another process.
+    ///Notice:This implementation blocks, and waits, until the library is injected, or the injection failed.
     pub fn eject(&self) -> Result<()> {
         let proc = Process::new(
             self.pid,
@@ -105,7 +85,7 @@ impl<'a> Injector<'a> {
         }
 
         let name = strip_path(self.dll)?;
-        let (_path, base) = get_module(name.as_str(), &proc)?;
+        // let (_path, base) = get_module(name.as_str(), &proc)?;
         let handle = get_module_in_pid(
             self.pid,
             |m| {
@@ -121,7 +101,7 @@ impl<'a> Injector<'a> {
             },
             None,
         )?;
-        info!("Found dll in proc, at addr:{:#x?}", base);
+        info!("Found dll in proc, with handle:{:#x?}", handle);
         //If the target process is x86, this is slightly too much,
         //but the windows kernel seems to allocate at least 4k, so this does not matter.
         const SIZE: usize = core::mem::size_of::<u64>();
@@ -130,9 +110,9 @@ impl<'a> Injector<'a> {
             let mut mempage = MemPage::new(&proc, SIZE, false)?;
             let mut buf = Vec::with_capacity(SIZE);
             if proc.is_under_wow()? {
-                buf.append(&mut (base as usize).as_bytes().to_vec());
+                buf.append(&mut (handle as usize).as_bytes().to_vec());
             } else {
-                buf.append(&mut base.as_bytes().to_vec());
+                buf.append(&mut handle.as_bytes().to_vec());
             }
             buf.shrink_to_fit();
             mempage.write(buf.as_slice())?;
@@ -141,13 +121,8 @@ impl<'a> Injector<'a> {
         self.exec_fn_in_proc(&proc, "FreeLibrary", mem)
     }
 
-    ///Actually Inject the DLL.
-    ///For now, the injection is only likely to succeed, if the injector, dll and target process have the same bitness (all x64, or all x86)
-    ///Open a Pr, if you know more about this!
-    ///Return information (Outside of Ok and Err) is purely informational (for now)! It should not be relied upon, and may change in Minor updates.
+    ///Inject a DLL into another process
     ///Notice:This implementation blocks, and waits, until the library is injected, or the injection failed.
-    /// # Panic
-    /// This function may panic, if a Handle cleanup fails.
     pub fn inject(&self) -> Result<()> {
         let proc = Process::new(
             self.pid,
@@ -174,7 +149,8 @@ impl<'a> Injector<'a> {
         };
         self.exec_fn_in_proc(&proc, "LoadLibraryW", mem)
     }
-
+    ///This function executes the entry_fn from Kernel32.dll with the argument of mem in the process proc.
+    ///the process mem was created with, and proc must hold the same handle.
     fn exec_fn_in_proc(&self, proc: &Process, entry_fn: &str, mem: MemPage) -> Result<()> {
         //What follows is a bunch of things, for injecting dlls cross-platform
         //https://rce.co/knockin-on-heavens-gate-dynamic-processor-mode-switching/
@@ -194,6 +170,11 @@ impl<'a> Injector<'a> {
             warn!("Supplied id is 0. Will not inject, as it is not supported by windows.");
             return Err(Error::Unsupported(Some(
                 "PID 0 is an invalid target under windows.".to_string(),
+            )));
+        }
+        if !mem.check_proc(proc) {
+            return Err(crate::error::Error::Io(std::io::Error::from(
+                std::io::ErrorKind::AddrNotAvailable,
             )));
         }
 
@@ -256,20 +237,15 @@ impl<'a> Injector<'a> {
         {
             //This method is intended to be only used, when we are compiled as x86, and are injecting to x64.
             if self_is_under_wow && !pid_is_under_wow {
-                let mut thread: HANDLE = null_mut();
-                let mut client: CLIENT_ID = CLIENT_ID {
-                    UniqueProcess: null_mut(),
-                    UniqueThread: null_mut(),
-                };
                 let ntdll = ntdll::NTDLL::new()?;
                 let (path, base) = ntdll.get_ntdll_base_addr(pid_is_under_wow, &proc)?;
                 let rva = get_dll_function(path, "RtlCreateUserThread".to_string())?;
                 let va = base + rva as u64;
-                let (r, t, c) = unsafe {
+                let (r, t, _c) = unsafe {
                     crate::platforms::x86::exec(
                         va,
                         proc.get_proc(),
-                        null_mut(),
+                        std::ptr::null_mut(),
                         0,
                         0,
                         0,
@@ -435,10 +411,9 @@ where
         }
     }
 }
-
+///This gets the directory, where windows files reside. Usually C:\Windows
 fn get_windir<'a>() -> Result<&'a String> {
     static WINDIR: once_cell::sync::OnceCell<String> = once_cell::sync::OnceCell::new();
-
     let str = WINDIR.get_or_try_init(||{
 		let i=check_ptr!(GetSystemWindowsDirectoryW(std::ptr::null_mut(),0),|v|v==0);
 		let mut str_buf:Vec<u16> = Vec::with_capacity( i as usize);
@@ -451,21 +426,6 @@ fn get_windir<'a>() -> Result<&'a String> {
 	})?;
     debug!("Windir is '{}'", str);
     Ok(str)
-}
-///Converts v to a String, and compares it using compare.
-///Will return the string, if compare returned true, for that string.
-//todo: could we remove this?
-fn converter(compare: impl Fn(&String) -> bool) -> impl Fn(Vec<u16>) -> Option<String> {
-    move |v| match str_from_wide_str(v.as_slice()) {
-        Ok(s) => {
-            if compare(&s) {
-                Some(s)
-            } else {
-                None
-            }
-        }
-        Err(_) => None,
-    }
 }
 
 ///This gets the Relative Virtual Address (rva) of the function name, from a ntdll file.
@@ -549,6 +509,8 @@ fn cmp(name: impl ToString) -> impl Fn(&str) -> bool {
     }
 }
 
+///Gets the base address of where a dll is loaded within a process.
+///The dll is identified by name. name is checked against the whole file name.
 fn get_module(name: &str, proc: &Process) -> Result<(String, u64)> {
     let cmp = cmp(name);
     if !process::Process::self_proc().is_under_wow()? || proc.is_under_wow()? {
@@ -559,6 +521,7 @@ fn get_module(name: &str, proc: &Process) -> Result<(String, u64)> {
         ) {
             Ok(r) => return Ok(r),
             //This should return, if ntdll is disabled. If ntdll is enabled, this gets discarded
+            #[cfg_attr(feature = "ntdll", allow(unused_variables))]
             Err(v) =>
             {
                 #[cfg(not(feature = "ntdll"))]

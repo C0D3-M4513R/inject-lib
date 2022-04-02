@@ -1,24 +1,14 @@
 use crate::Result;
-use std::alloc::alloc;
-use std::fmt::{format, Display, Formatter};
-use std::ops::Deref;
+use std::fmt::{Display, Formatter};
 use winapi::shared::minwindef::{FALSE, LPCVOID, LPVOID};
 
 use crate::platforms::platform::macros::{err, void_res};
 use crate::platforms::platform::process::Process;
 use log::{debug, error, info, trace, warn};
-use winapi::shared::basetsd::SIZE_T;
-use winapi::um::memoryapi::{
-    CreateFileMappingW, MapViewOfFile, VirtualAlloc, VirtualAllocEx, VirtualFreeEx,
-    WriteProcessMemory, FILE_MAP_ALL_ACCESS, FILE_MAP_EXECUTE,
-};
+use winapi::um::memoryapi::{VirtualAllocEx, VirtualFreeEx, WriteProcessMemory};
 use winapi::um::winnt::{
-    BOOLEAN, CONTEXT, HANDLE, IMAGE_FILE_MACHINE_AMD64, IMAGE_FILE_MACHINE_I386,
-    IMAGE_FILE_MACHINE_UNKNOWN, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE,
-    PAGE_READWRITE, PHANDLE, PROCESSOR_ARCHITECTURE_AMD64, PROCESSOR_ARCHITECTURE_INTEL,
-    PROCESS_ALL_ACCESS, PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE,
-    PSECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR, WOW64_CONTEXT, WOW64_FLOATING_SAVE_AREA,
+    MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE, PAGE_READWRITE,
+    PROCESS_VM_OPERATION, PROCESS_VM_WRITE,
 };
 
 #[derive(Debug)]
@@ -29,6 +19,8 @@ pub struct MemPage<'a> {
     exec: bool,
 }
 impl<'a> MemPage<'a> {
+    ///Create a new MemoryPage.
+    ///exec specifies, if the contents of the MemoryPage should be able to be executed or not.
     pub fn new(proc: &'a Process, size: usize, exec: bool) -> Result<Self> {
         //https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualallocex
         if !proc.has_perm(PROCESS_VM_OPERATION) {
@@ -93,9 +85,15 @@ impl<'a> MemPage<'a> {
         debug_assert!(n == buffer.len());
         Ok(n)
     }
+    ///Get the Address, at which the MemPage as allocated
     #[must_use]
     pub fn get_address(&self) -> LPVOID {
         self.addr
+    }
+    ///Checks, if the Process, this MemoryPage was allocated in is valid in another Process object.
+    #[must_use]
+    pub fn check_proc(&self, proc: &Process) -> bool {
+        self.proc.get_pid() == proc.get_pid()
     }
 }
 impl<'a> Display for MemPage<'a> {
@@ -111,6 +109,7 @@ impl<'a> Display for MemPage<'a> {
     }
 }
 impl<'a> Drop for MemPage<'a> {
+    ///Free Memory
     fn drop(&mut self) {
         trace!("Releasing VirtualAlloc'd Memory");
         if unsafe { VirtualFreeEx(self.proc.get_proc(), self.addr, 0, MEM_RELEASE) } == FALSE {

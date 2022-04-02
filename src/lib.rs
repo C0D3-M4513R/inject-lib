@@ -2,7 +2,7 @@
 
 use log::{debug, trace, warn};
 use std::path::PathBuf;
-
+///This struct will expose certain module private functions, to actually use the api.
 pub struct Injector<'a> {
     pub dll: &'a str,
     pub pid: u32,
@@ -14,12 +14,15 @@ pub mod error;
 mod platforms;
 
 impl<'a> Injector<'a> {
+    ///Create a new Injector object.
     pub fn new(dll: &'a str, pid: u32) -> Self {
         Injector { dll, pid }
     }
+    ///Sets the dll
     pub fn set_dll(&mut self, dll: &'a str) {
         self.dll = dll;
     }
+    ///Sets the pid
     pub fn set_pid(&mut self, pid: u32) {
         self.pid = pid;
     }

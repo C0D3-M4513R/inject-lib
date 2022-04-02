@@ -2,8 +2,7 @@ use crate::platforms::platform::macros::{check_ptr, err};
 use crate::Result;
 use log::{debug, error, info, trace, warn};
 use once_cell::sync::OnceCell;
-use std::borrow::Borrow;
-use std::fmt::{write, Display, Formatter};
+use std::fmt::{Display, Formatter};
 use winapi::shared::minwindef::{DWORD, FALSE};
 use winapi::um::handleapi::CloseHandle;
 use winapi::um::processthreadsapi::{GetCurrentProcess, OpenProcess};
@@ -13,6 +12,8 @@ use winapi::um::winnt::{
 };
 use winapi::um::wow64apiset::IsWow64Process2;
 
+///Represents a Process.
+///Holds various information about the open Process handle, to ensure better function performance.
 #[derive(Debug)]
 pub struct Process {
     //I save this as usize rather than Handle, because usize is sync.
@@ -79,18 +80,25 @@ impl Process {
             )))
         }
     }
+    ///Get the contained process Handle
+    #[must_use]
     pub fn get_proc(&self) -> HANDLE {
         self.proc as HANDLE
     }
+    ///Get the pid, the process Handle represents
+    #[must_use]
     pub fn get_pid(&self) -> u32 {
         self.pid
     }
+    ///Checks if the process handle has a specific permission.
+    #[must_use]
     pub fn has_perm(&self, perm: DWORD) -> bool {
         return self.perms & perm == perm;
     }
 }
 
 impl Drop for Process {
+    ///Closes the Process Handle properly
     fn drop(&mut self) {
         trace!("Cleaning Process Handle");
         if unsafe { CloseHandle(self.proc as HANDLE) } == FALSE {
@@ -102,8 +110,6 @@ impl Drop for Process {
                     "CloseHandle of ".to_string() + std::stringify!($name),
                 ),
             );
-            //Do not panic here, since it could cause to an abort.
-            // panic!("Error during cleanup");
         }
     }
 }
@@ -112,8 +118,8 @@ impl Display for Process {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "(proc:{:x},perms:{:x}, wow:{:#?})",
-            self.proc as usize, self.perms, self.wow
+            "(proc:{:x},pid: {},perms:{:x}, wow:{:#?})",
+            self.proc as usize, self.pid, self.perms, self.wow
         )
     }
 }
