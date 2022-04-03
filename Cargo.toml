@@ -1,6 +1,6 @@
 [package]
 name = "inject-lib"
-version = "0.0.5"
+version = "0.0.6"
 description = "A windows dll injection library written in rust with minimal dependencies."
 readme = "README.md"
 repository = "https://github.com/C0D3-M4513R/inject-lib"
@@ -41,7 +41,6 @@ pelite = "0.9" #to read/parse dll information. #todo: maybe replace with exe-rs?
 [dependencies]
 log = "0.4"
 once_cell="1.8"
-
 
 [features]
 default=[]

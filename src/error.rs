@@ -19,6 +19,77 @@ impl From<std::io::Error> for Error {
         Error::Io(e)
     }
 }
+impl Error {
+    ///Gets the contents of Error::Winapi, if self holds data of that type
+    fn get_winapi(&self) -> Option<(&String, &u32)> {
+        match self {
+            Error::Winapi(x, y) => Some((x, y)),
+            _ => None,
+        }
+    }
+    ///Gets the contents of Error::NTDLL, if self holds data of that type
+    fn get_ntdll(&self) -> Option<&i32> {
+        match self {
+            Error::Ntdll(x) => Some(x),
+            _ => None,
+        }
+    }
+    ///Gets the contents of Error::WTFConvert, if self holds data of that type
+    fn get_wtfconvert(&self) -> Option<&OsString> {
+        match self {
+            Error::WTFConvert(x) => Some(x),
+            _ => None,
+        }
+    }
+    ///Gets the contents of Error::Io, if self holds data of that type
+    fn get_io(&self) -> Option<&std::io::Error> {
+        match self {
+            Error::Io(x) => Some(x),
+            _ => None,
+        }
+    }
+    ///Gets the contents of Error::Unsupported, if self holds data of that type
+    fn get_unsupported(&self) -> Option<&Option<String>> {
+        match self {
+            Error::Unsupported(x) => Some(x),
+            _ => None,
+        }
+    }
+    ///Gets the contents of Error::Unsuccessful, if self holds data of that type
+    fn get_unsuccessful(&self) -> Option<&Option<String>> {
+        match self {
+            Error::Unsuccessful(x) => Some(x),
+            _ => None,
+        }
+    }
+    #[cfg(target_family = "windows")]
+    ///Gets the contents of Error::NTDLL, if self holds data of that type
+    fn get_pelite(&self) -> Option<&pelite::Error> {
+        match self {
+            Error::Pelite(x) => Some(x),
+            _ => None,
+        }
+    }
+}
+//due to equality testing for Error::Io, we cannot impl Eq for Error{}
+impl PartialEq<Self> for Error {
+    fn eq(&self, other: &Self) -> bool {
+        fn helper(me: &Error, other: &Error) -> Option<bool> {
+            Some(match me {
+                Error::Winapi(x, y) => other.get_winapi()?.eq(&(x, y)),
+                Error::Ntdll(x) => other.get_ntdll()?.eq(x),
+                Error::WTFConvert(x) => other.get_wtfconvert()?.eq(x),
+                Error::Io(x) => other.get_io()?.kind() == x.kind(), //todo:improve equality testing for Error::Io
+                #[cfg(target_family = "windows")]
+                Error::Pelite(x) => other.get_pelite()?.eq(x),
+                Error::Unsupported(x) => other.get_unsupported()?.eq(x),
+                Error::Unsuccessful(x) => other.get_unsuccessful()?.eq(x),
+            })
+        }
+        *helper(self, other).get_or_insert(false)
+    }
+}
+
 #[cfg(target_family = "windows")]
 mod windows {
     use crate::error::Error;

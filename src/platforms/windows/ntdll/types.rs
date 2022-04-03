@@ -2,12 +2,20 @@
 use ntapi::ntapi_base::KPRIORITY;
 use ntapi::ntldr::LDR_DLL_LOAD_REASON;
 use ntapi::ntpsapi::GDI_HANDLE_BUFFER64;
-use winapi::shared::basetsd::ULONG64;
-use winapi::shared::minwindef::BOOL;
+use winapi::shared::basetsd::{DWORD64, PDWORD64, ULONG64};
+use winapi::shared::minwindef::PULONG;
 use winapi::shared::ntdef::{BOOLEAN, CHAR, NTSTATUS, UCHAR, ULONG, UNICODE_STRING64, USHORT};
 use winapi::um::winnt::{
-    FLS_MAXIMUM_AVAILABLE, HANDLE, LARGE_INTEGER, LIST_ENTRY64, PVOID64, ULARGE_INTEGER, ULONGLONG,
+    FLS_MAXIMUM_AVAILABLE, HANDLE, LARGE_INTEGER, LIST_ENTRY64, PVOID, PVOID64, ULARGE_INTEGER,
+    ULONGLONG,
 };
+//This is the prototype, of the NtReadVirtualMemory function
+pub(crate) type FnNtWOW64ReadVirtualMemory64 =
+    unsafe extern "system" fn(HANDLE, PVOID64, PVOID64, ULONG, ULONG64) -> NTSTATUS;
+//This is the prototype, of the NtReadVirtualMemory function
+pub(crate) type FnNtReadVirtualMemory =
+    unsafe extern "system" fn(HANDLE, PVOID, PVOID, ULONG, PULONG) -> NTSTATUS;
+
 use winapi::STRUCT;
 
 macro_rules! UNION {
@@ -152,7 +160,7 @@ UNION! {union RTL_BALANCED_NODE64_u {
 }}
 STRUCT! {struct RTL_BALANCED_NODE64 {
     u: RTL_BALANCED_NODE64_u,
-    ParentValue: ULONG64,//Pointer in normal ntdll, but not WOW64?
+    ParentValue: ULONG64,//Pointer in Normal ntdll, but not WOW64?
 }}
 UNION! {union LDR_DATA_TABLE_ENTRY64_u1 {
     InInitializationOrderLinks: LIST_ENTRY64,

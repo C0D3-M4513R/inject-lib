@@ -1,35 +1,41 @@
 #![cfg(feature = "ntdll")]
 mod types; //These are exclusively ntdll types
 
+use super::macros::{check_ptr, err};
+use super::process::Process;
+use super::{get_windir, predicate, str_from_wide_str};
 use crate::error::Error;
-use crate::platforms::platform::macros::check_ptr;
-pub use crate::platforms::platform::ntdll::types::LDR_DATA_TABLE_ENTRY64;
-use crate::platforms::platform::process::Process;
-use crate::platforms::platform::{get_windir, predicate, str_from_wide_str};
 use crate::Result;
-use log::{debug, info, trace, warn};
-use ntapi::ntapi_base::{CLIENT_ID, CLIENT_ID64, PCLIENT_ID, PCLIENT_ID64};
-use ntapi::ntpsapi::{NtCreateProcess, NtCreateThread};
-use ntapi::ntrtl::{RtlCreateUserThread, PUSER_THREAD_START_ROUTINE};
+use log::{debug, error, info, trace, warn};
+use ntapi::ntpsapi::PROCESS_BASIC_INFORMATION;
 use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
 use once_cell::sync::OnceCell;
 use pelite::Wrap;
-use std::ffi::{c_void, OsStr};
+use std::ffi::OsStr;
 use std::ops::Shl;
 use std::os::windows::ffi::OsStrExt;
-use winapi::shared::basetsd::{DWORD64, PDWORD64, ULONG64};
+use std::ptr::null_mut;
+pub use types::LDR_DATA_TABLE_ENTRY64;
+use winapi::shared::basetsd::{DWORD64, PDWORD64, PULONG64, ULONG64};
 use winapi::shared::minwindef::{HMODULE, PULONG, ULONG};
-use winapi::shared::ntdef::{NTSTATUS, PVOID};
-use winapi::um::libloaderapi::{GetProcAddress, LoadLibraryW};
-use winapi::um::winnt::HANDLE;
+use winapi::shared::ntdef::{NTSTATUS, PVOID, PVOID64};
+use winapi::um::libloaderapi::{FreeLibrary, GetProcAddress, LoadLibraryW};
+use winapi::um::processthreadsapi::GetCurrentProcess;
+use winapi::um::winnt::{HANDLE, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION};
 
+///This class represents the NTDLL module/dll from windows.
+///This class is focused on having the least possible NTDLL function calls,
+///whilst still preserving functionality with all use cases.
+#[derive(Debug)]
 pub(crate) struct NTDLL {
-    handle: usize,
+    pub(self) handle: usize,
 }
 impl NTDLL {
+    ///Get the NTDLL object.
+    ///This class employs the Singleton principle.
     pub(crate) fn new() -> Result<&'static Self> {
-        static inst: OnceCell<NTDLL> = OnceCell::new();
-        inst.get_or_try_init(|| {
+        static INST: OnceCell<NTDLL> = OnceCell::new();
+        INST.get_or_try_init(|| {
             let ntdll: Vec<u16> = OsStr::new("NTDLL.dll\0").encode_wide().collect();
             let handle = check_ptr!(LoadLibraryW(ntdll.as_ptr())) as usize;
             Ok(NTDLL { handle })
@@ -89,31 +95,26 @@ impl NTDLL {
         P: Fn(&Vec<u16>) -> bool,
         E: Fn(Error) -> Result<R>,
     {
-        unsafe {
-            self.get_module_in_proc(proc, |w, v| {
-                if predicate(&v) {
-                    Some(selector(w, &v))
-                } else {
-                    None
-                }
-            })
-        }
+        self.get_module_in_proc(proc, |w, v| {
+            if predicate(&v) {
+                Some(selector(w, &v))
+            } else {
+                None
+            }
+        })
     }
 
     ///Gets a module, by reading the Process Environment Block (PEB), of the process, using ntdll functions.
     ///Because this function uses ntdll functions, it should work the same, if running as x86, or x64.
-    ///# Safety
-    /// The proc handle must?(ntdll has no docs) have the PROCESS_VM_READ and (PROCESS_QUERY_INFORMATION or PROCESS_QUERY_LIMITED_INFORMATION?) access rights.
-    /// The proc handle should also be valid.
     ///
     /// # Arguments
     ///
-    ///- proc: a Process Handle
+    ///- proc: a Process Handle (Can't be a pseudo-handle, like [super::process::Process::self_proc])
     ///- predicate: A function, which selects, what information, from what dll it wants.
     ///- predicate 2nd argument: full path, to dll
     //TODO: add tons of checks
-    //todo: less if's in this  function
-    //todo: test on x86. are the tons of paths even nessesary?
+    //todo: reduce if's in this function
+    //todo: should we remove unsafe here?
     pub(crate) unsafe fn get_module_in_proc<F, R>(&self, proc: &Process, predicate: F) -> Result<R>
     where
         F: Fn(
@@ -121,36 +122,31 @@ impl NTDLL {
             Vec<u16>,
         ) -> Option<R>,
     {
+        if !proc.has_real_handle() {
+            return Err(crate::error::Error::Io(std::io::Error::from(
+                std::io::ErrorKind::InvalidInput,
+            )));
+        }
         let pid_under_wow = proc.is_under_wow()?;
         info!("pid is under wow:{}", pid_under_wow);
-        let peb_addr: u64;
+        let peb_addr: u64=
         //This gets the PEB address, from the PBI
-        {
-            // let mut pbi = PROCESS_BASIC_INFORMATION{
-            // 	ExitStatus: 0,
-            // 	PebBaseAddress: std::ptr::null_mut(),
-            // 	AffinityMask: 0,
-            // 	BasePriority: 0,
-            // 	UniqueProcessId: std::ptr::null_mut(),
-            // 	InheritedFromUniqueProcessId: std::ptr::null_mut()
-            // };
-            // const SIZE_PBI:usize = std::mem::size_of::<PROCESS_BASIC_INFORMATION_WOW64>();
-            // let mut buf_pbi:Vec<u8> = Vec::with_capacity(100);
-            // let mut buf_pbi:Vec<u8> = Vec::with_capacity(SIZE_PBI);
+        if proc.is_under_wow()?{
+            let pbi: PROCESS_BASIC_INFORMATION=
+                self.query_process_information(proc, ntapi::ntpsapi::ProcessBasicInformation)?;
+            pbi.PebBaseAddress as u64
+        } else {
             let pbi: types::PROCESS_BASIC_INFORMATION_WOW64 =
                 self.query_process_information(proc, ntapi::ntpsapi::ProcessBasicInformation)?;
-            // buf_pbi.set_len(i as usize);
-            // let pbi_ptr:*const PROCESS_BASIC_INFORMATION_WOW64 = std::mem::transmute(buf_pbi.as_ptr());
-            // let pbi = *pbi_ptr;
-            peb_addr = pbi.PebBaseAddress as u64;
-            debug!("Peb addr is {:x?}", peb_addr);
-        }
+            pbi.PebBaseAddress as u64
+        };
+        debug!("Peb addr is {:x?}", peb_addr);
         let ldr_addr;
         //This reads the PEB, and gets the LDR address
         {
             type PEB32 = ntapi::ntwow64::PEB32;
             type PEB64 = types::PEB64;
-            ldr_addr = if false && pid_under_wow {
+            ldr_addr = if pid_under_wow {
                 let peb = *self.read_virtual_mem::<PEB32>(proc, peb_addr)?;
                 peb.Ldr as u64
             } else {
@@ -167,7 +163,7 @@ impl NTDLL {
             type PEB_LDR_DATA32 = ntapi::ntwow64::PEB_LDR_DATA32;
             #[allow(non_camel_case_types)]
             type PEB_LDR_DATA64 = types::PEB_LDR_DATA64;
-            modlist_addr = if false && pid_under_wow {
+            modlist_addr = if pid_under_wow {
                 let ldr = *self.read_virtual_mem::<PEB_LDR_DATA32>(proc, ldr_addr)?;
                 ldr.InLoadOrderModuleList.Flink as u64
             } else {
@@ -184,7 +180,7 @@ impl NTDLL {
             #[allow(non_camel_case_types)]
             type LDR_DATA_TABLE_ENTRY64 = types::LDR_DATA_TABLE_ENTRY64;
             let ldr_entry_data: Wrap<LDR_DATA_TABLE_ENTRY32, LDR_DATA_TABLE_ENTRY64>;
-            if false & pid_under_wow {
+            if pid_under_wow {
                 let entry = *self.read_virtual_mem(proc, modlist_addr as u64)?;
                 debug!("Read the LDR_DATA_Table {:#x}", modlist_addr);
                 ldr_entry_data = Wrap::T32(entry);
@@ -221,7 +217,7 @@ impl NTDLL {
                 let dll_path_buf = self.read_virtual_mem_fn(
                     proc,
                     dll_win_string_buffer,
-                    (dll_win_string_length) as usize,
+                    (dll_win_string_length) as u32,
                 )?;
                 let dll_path_old = dll_path_buf.as_slice();
                 let mut dll_path = Vec::with_capacity(((dll_win_string_length >> 1) + 1) as usize);
@@ -253,10 +249,13 @@ impl NTDLL {
 
     ///See [read_virtual_mem_fn].
     unsafe fn read_virtual_mem<T>(&self, proc: &Process, addr: u64) -> Result<*mut T> {
-        let v = self.read_virtual_mem_fn(proc, addr, core::mem::size_of::<T>())?;
+        let v = self.read_virtual_mem_fn(proc, addr, core::mem::size_of::<T>() as u32)?;
         Ok(v.leak().as_ptr() as *mut T)
     }
+
     ///This reads `size` bytes, of memory, from address `addr`, in the process `proc`
+    /// This function checks, if we have been passed a pseudo-handle (GetCurrentProcess).
+    /// Those types of handles do not work with ntdll for reasons.
     ///
     ///# Safety
     ///`proc` needs to have the PROCESS_VM_READ access rights.
@@ -268,57 +267,63 @@ impl NTDLL {
     ///
     /// T needs to be non zero sized.
     ///
-    unsafe fn read_virtual_mem_fn(
-        &self,
-        proc: &Process,
-        addr: u64,
-        size: usize,
-    ) -> Result<Vec<u8>> {
-        //This is the prototype, of the NtReadVirtualMemory function
-        type FnNtReadVirtualMemory =
-            unsafe extern "system" fn(HANDLE, DWORD64, PVOID, ULONG64, PDWORD64) -> NTSTATUS;
-        static NT_READ_VIRTUAL_MEMORY_FN: OnceCell<FnNtReadVirtualMemory> = OnceCell::new();
-
-        let NtReadVirtualMemory = NT_READ_VIRTUAL_MEMORY_FN.get_or_try_init(|| {
-            //We select the top one, even if proc.is_under_wow()==false, so that we have a constant function type.
-            let rvm: &[u8] = if Process::self_proc().is_under_wow()? {
-                b"NtWow64ReadVirtualMemory64\0"
-            } else {
-                b"NtReadVirtualMemory\0"
-            };
-            Ok(std::mem::transmute(check_ptr!(GetProcAddress(
-                self.handle as HMODULE,
-                rvm.as_ptr() as *const i8
-            ))))
+    unsafe fn read_virtual_mem_fn(&self, proc: &Process, addr: u64, size: u32) -> Result<Vec<u8>> {
+        if !proc.has_real_handle() {
+            return Err(crate::error::Error::Io(std::io::Error::from(
+                std::io::ErrorKind::InvalidInput,
+            )));
+        }
+        static FNS: OnceCell<FnNtdllWOW> = OnceCell::new();
+        let fns = FNS.get_or_try_init(|| {
+            FnNtdllWOW::new(b"NtReadVirtualMemory\0", b"NtWow64ReadVirtualMemory64\0")
         })?;
-
-        let mut buf: Vec<u8> = Vec::with_capacity(size);
+        let mut buf: Vec<u8> = Vec::with_capacity(size as usize);
         trace!("reading at address {:x?} {} bytes", addr, size);
-        let mut i: u64 = 0;
-        let status = crate::error::Ntdll::new(unsafe {
-            NtReadVirtualMemory(
+        println!("reading at address {:x?} {} bytes", addr, size);
+        let mut i: u32 = 0;
+        let status = if proc.is_under_wow()? {
+            let cfn: types::FnNtReadVirtualMemory = core::mem::transmute(*fns.get_fn()?.take());
+            cfn(
+                proc.get_proc(),
+                addr as PVOID,
+                buf.as_mut_ptr() as PVOID,
+                size as u32,
+                &mut i as *mut u32,
+            )
+        } else {
+            let cfn: types::FnNtWOW64ReadVirtualMemory64 =
+                core::mem::transmute(*fns.get_fn()?.take());
+            cfn(
                 proc.get_proc(),
                 addr,
-                buf.as_mut_ptr() as PVOID,
-                size as u64,
-                &mut i as *mut u64,
+                buf.as_mut_ptr() as PVOID64,
+                size as u32,
+                &mut i as *mut u32 as u64,
             )
-        });
+        };
+
         trace!("rvm {},{}/{}", status, i, size);
+        println!("rvm {},{}/{}", status, i, size);
         //We read i bytes. So we let the Vec know, so it can calculate size and deallocate accordingly, if it wants.
         //Also: This will enable debugger inspection, of the buf, since the debugger will now know, that the vec is initialised.
         assert!(
-            i <= size as u64,
+            i <= size as u32,
             "{:#x} bytes were read into a {:#x} byte buffer.",
             i,
             size
         );
+        // if i==0{
+        //     println!("zero bytes read?");
+        //     i=size as u64;
+        // }
         buf.set_len(i as usize);
         buf.shrink_to_fit();
         Ok(buf)
     }
 
     ///This reads `size` elements, of size T, of memory, from address `addr`, in the process `proc`, into `buf`.
+    /// This function checks, if we have been passed a pseudo-handle (GetCurrentProcess).
+    /// Those types of handles do not work with ntdll for reasons.
     ///
     ///# Safety
     ///`proc` needs to have the PROCESS_QUERY_INFORMATION (or PROCESS_QUERY_LIMITED_INFORMATION?) access rights.
@@ -330,6 +335,7 @@ impl NTDLL {
     ///Windows might sometimes decide, to sometimes just end the entire program randomly, meaning, that this function won't return sometimes.
     ///On other occasions, Windows will return some extraneous value of bytes read.
     ///In those cases, this function will Panic.
+    //todo:add a test for this?
     unsafe fn query_process_information<T>(
         &self,
         proc: &Process,
@@ -338,63 +344,255 @@ impl NTDLL {
     where
         T: Copy,
     {
+        if !proc.has_real_handle() {
+            return Err(crate::error::Error::Io(std::io::Error::from(
+                std::io::ErrorKind::InvalidInput,
+            )));
+        }
+        if !proc.has_perm(PROCESS_QUERY_INFORMATION)
+            || !proc.has_perm(PROCESS_QUERY_LIMITED_INFORMATION)
+        {
+            return Err(crate::error::Error::Io(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied,
+            )));
+        }
         //Function prototype, of the NtQueryInformationProcess function in ntdll.
         type FnNtQueryInformationProcess =
             fn(HANDLE, ntapi::ntpsapi::PROCESSINFOCLASS, PVOID, ULONG, PULONG) -> NTSTATUS;
+
         //Get function
-        static NT_QUERY_INFORMATION_PROCESS_OPT: OnceCell<FnNtQueryInformationProcess> =
-            OnceCell::new();
-        let NtQueryInformationProcess = NT_QUERY_INFORMATION_PROCESS_OPT.get_or_try_init(|| {
-            //Todo: make this compatible with x86 injection
-            let qip: &[u8] = if Process::self_proc().is_under_wow()? {
-                b"NtWow64QueryInformationProcess64\0"
+        let cfn = {
+            static FNS: OnceCell<FnNtdllWOW> = OnceCell::new();
+            let fns = FNS.get_or_try_init(|| {
+                FnNtdllWOW::new(
+                    b"NtQueryInformationProcess\0",
+                    b"NtWow64QueryInformationProcess64\0",
+                )
+            })?;
+            let cfn = if proc.is_under_wow()? {
+                fns.get_fn()
             } else {
-                b"NtQueryInformationProcess\0"
-            };
-            let proc_ptr = check_ptr!(GetProcAddress(
-                self.handle as HMODULE,
-                qip.as_ptr() as *const i8
-            ));
-            let proc = std::mem::transmute(proc_ptr);
-            trace!("proc is {:x}", proc_ptr as u64);
-            Ok(proc)
-        })?;
+                fns.get_wow64()
+            }?
+            .take();
+            let cfn: FnNtQueryInformationProcess = core::mem::transmute(*cfn);
+            cfn
+        };
         //ready things, for function call
         let mut i = 0u32;
         let i_ptr = &mut i as *mut u32;
         let size_peb: usize = std::mem::size_of::<T>();
-        let mut buf: Vec<u8> = vec![0; size_peb];
+        let mut buf: Vec<u8> = Vec::with_capacity(size_peb);
         //Call function
-        trace!("Running NtQueryInformationProcess with fnptr:{:x?} proc:{:x?},pic:{:x}. Size is {}/{}, buf is {:x?}",*NtQueryInformationProcess as usize,proc.get_proc(),pic,size_peb,i, buf);
-        let status = crate::error::Ntdll::new(NtQueryInformationProcess(
+        println!("Running NtQueryInformationProcess with fnptr:{:x?} proc:{:x?},pic:{:x}. Size is {}, buf is {:x?}",cfn as usize,proc.get_proc(),pic,size_peb, buf);
+        let status = crate::error::Ntdll::new(cfn(
             proc.get_proc(),
             pic,
             buf.as_mut_ptr() as PVOID,
             size_peb as u32,
             i_ptr,
         ));
-        trace!(
+        println!(
             "qip {:x},0x{:x}|0x{:x}/0x{:x} buf is {:?}",
             status.get_status(),
             i,
-            i as u32,
+            i,
             size_peb,
             buf
         );
-        if i as u64 > size_peb as u64 || i as u64 == 0u64 {
-            //This should never happen, unless I fucked something up.
-            panic!("Read more, than buf can handle, or read 0 bytes!
-I do not know, what corrupted, if something corrupted, or if windows reports arbitrary stuff.
-Memory might be fucked. Could be, that the function should just have errored. I DO NOT KNOW, what happened.
-
-Windows didn't yet freeze or kill our program. This might mean, that this is recoverable?
-
-Report IMMEDIATELY.
-		");
+        assert!(i<=size_peb as u32,"Detected buffer overflow. Stopping here, due to unknown or possibly malicious side-effects.");
+        if i == 0 && size_peb != 0 {
+            return Err(crate::error::Error::Unsuccessful(Some(
+                "Zero bytes read, but the requested type is not Zero sized.".to_string(),
+            )));
         }
+        //Truncate vec, to only use initialized memory.
+        buf.set_len(i as usize);
+        buf.shrink_to_fit();
         //This should be safe, since the vec has as many bytes, as T
-        let pbi_ptr: *mut T = std::mem::transmute(buf.as_mut_ptr());
+        let pbi_ptr: *mut T = std::mem::transmute(buf.leak().as_mut_ptr());
         // trace!("exitstatus:{:x},pebaddress:{:x},baseprio:{:x},upid:{:x},irupid:{:x}",pbi.ExitStatus,pbi.PebBaseAddress,pbi.BasePriority,pbi.UniqueProcessId,pbi.InheritedFromUniqueProcessId);
         Ok(*pbi_ptr)
+    }
+}
+///Helps to differentiate between two function types
+enum NtdllFn<T> {
+    WOW(T),
+    Normal(T),
+}
+impl<T> NtdllFn<T> {
+    ///Gets the content of the enum as a reference
+    pub fn get_content(&self) -> &T {
+        match self {
+            NtdllFn::WOW(t) => t,
+            NtdllFn::Normal(t) => t,
+        }
+    }
+    ///Destroys the enum, and gives the contained data
+    pub fn take(self) -> T {
+        match self {
+            NtdllFn::WOW(t) => t,
+            NtdllFn::Normal(t) => t,
+        }
+    }
+}
+///This holds an abstraction, for functions that are twice inside of NTDLL
+///Once for regular interfacing, and a second for specifically querying 64-bit info from inside WOW
+#[derive(Clone)]
+struct FnNtdllWOW<'a, 'b, 'c> {
+    ntdll: &'c NTDLL,
+    wow64name: &'b [u8],
+    name: &'a [u8],
+    wowfn: OnceCell<usize>,
+    namefn: OnceCell<usize>,
+}
+impl<'a, 'b, 'c> FnNtdllWOW<'a, 'b, 'c> {
+    ///Constructs D
+    pub(self) fn new(name: &'a [u8], wow64name: &'b [u8]) -> Result<Self> {
+        Ok(FnNtdllWOW {
+            ntdll: NTDLL::new()?,
+            wow64name,
+            name,
+            wowfn: OnceCell::new(),
+            namefn: OnceCell::new(),
+        })
+    }
+    ///returns a function which is the wow64name function inside NTDLL, if we are running inside of wow.
+    ///If we are not running inside of WOW, this function will return the result of [get_read_mem].
+    pub(self) unsafe fn get_wow64(&self) -> Result<NtdllFn<&usize>> {
+        #[cfg(target_pointer_width = "64")]
+        {
+            self.get_fn()
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            self.wowfn
+                .get_or_try_init(|| {
+                    Ok(std::mem::transmute(check_ptr!(GetProcAddress(
+                        self.ntdll.handle as HMODULE,
+                        self.wow64name.as_ptr() as *const i8
+                    ))))
+                })
+                .map(|x| NtdllFn::WOW(x))
+        }
+    }
+    ///returns a function which is the NtReadVirtualMemory function inside NTDLL
+    pub(self) unsafe fn get_fn(&self) -> Result<NtdllFn<&usize>> {
+        self.namefn
+            .get_or_try_init(|| {
+                Ok(std::mem::transmute(check_ptr!(GetProcAddress(
+                    self.ntdll.handle as HMODULE,
+                    self.name.as_ptr() as *const i8
+                ))))
+            })
+            .map(|x| NtdllFn::Normal(x))
+    }
+}
+
+impl Drop for NTDLL {
+    ///Decrement Ntdll module use counter.
+    ///Also invalidates handle.
+    fn drop(&mut self) {
+        if unsafe { FreeLibrary(self.handle as HMODULE) } == 0 {
+            warn!("Error whilst unloading NTDLL.dll. This is not actually that bad, since it is present in every Process anyways.");
+            err("FreeLibrary");
+        };
+    }
+}
+#[cfg(test)]
+mod test {
+    use super::NTDLL;
+    use crate::Result;
+    use ntapi::ntpsapi::PROCESS_BASIC_INFORMATION;
+    use winapi::um::winnt::PROCESS_ALL_ACCESS;
+
+    #[test]
+    fn new() -> Result<()> {
+        let ntdll = NTDLL::new();
+        assert!(ntdll.is_ok(), "{}", ntdll.unwrap_err());
+        Ok(())
+    }
+
+    #[test]
+    fn get_module_in_proc() -> Result<()> {
+        let proc = super::super::process::Process::new(std::process::id(), PROCESS_ALL_ACCESS)?;
+        // let proc = super::super::process::Process::self_proc();
+        let ntdll = NTDLL::new()?;
+        let (b, m) = unsafe {
+            ntdll.get_module_in_proc(
+                &proc,
+                super::predicate(
+                    |x: pelite::Wrap<
+                        ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32,
+                        super::types::LDR_DATA_TABLE_ENTRY64,
+                    >| match x {
+                        pelite::Wrap::T32(x) => x.DllBase as u64,
+                        pelite::Wrap::T64(x) => x.DllBase as u64,
+                    },
+                    |x| super::super::cmp("KERNEL32.DLL")(&x),
+                ),
+            )
+        }?;
+        Ok(())
+    }
+    #[test]
+    fn no_find_get_module_in_proc() -> Result<()> {
+        const RECURSION:&str = "We looped through the whole InLoadOrderModuleList, but still have no match. Aborting, because this would end in an endless loop.";
+        let proc = super::super::process::Process::new(std::process::id(), PROCESS_ALL_ACCESS)?;
+        let ntdll = NTDLL::new()?;
+        let x = unsafe { ntdll.get_module_in_proc(&proc, |_, _| None::<()>) };
+        assert!(x.is_err(),"get_module_in_proc found something, eventhough it shouldn't have. We asked for NOTHING.");
+        assert_eq!(
+            x.unwrap_err(),
+            crate::error::Error::Unsuccessful(Some(RECURSION.to_string()))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn read_memory() -> Result<()> {
+        let buf: Vec<u8> = (0..255).collect();
+        let s = buf.as_slice();
+        let ntdll = NTDLL::new()?;
+        let proc = super::super::process::Process::new(std::process::id(), PROCESS_ALL_ACCESS)?;
+        let self_proc = super::super::process::Process::self_proc();
+        let mut mem = super::super::mem::MemPage::new(&proc, buf.len(), false)?;
+        mem.write(s)?;
+        let re = unsafe {
+            ntdll.read_virtual_mem_fn(self_proc, mem.get_address() as u64, buf.len() as u32)
+        };
+        assert!(
+            re.is_err(),
+            "read_virtual_mem_fn does apparently not work without a real handle"
+        );
+
+        println!("mem addr at {:#x}", mem.get_address() as usize);
+        let r = unsafe { ntdll.read_virtual_mem_fn(&proc, s.as_ptr() as u64, buf.len() as u32) }?;
+        assert_eq!(r, buf);
+        Ok(())
+    }
+
+    #[test]
+    fn query_process_information_self() -> Result<()> {
+        let ntdll = super::NTDLL::new()?;
+        {
+            let proc = super::super::process::Process::new(std::process::id(), PROCESS_ALL_ACCESS)?;
+            let r: PROCESS_BASIC_INFORMATION = unsafe {
+                ntdll.query_process_information(&proc, ntapi::ntpsapi::ProcessBasicInformation)?
+            };
+        }
+        {
+            let proc = super::super::process::Process::self_proc();
+            let r: Result<PROCESS_BASIC_INFORMATION> = unsafe {
+                ntdll.query_process_information(proc, ntapi::ntpsapi::ProcessBasicInformation)
+            };
+            assert!(r.is_err(), "Pseudo-Handles do not work on ntdll?");
+            let r = unsafe { r.unwrap_err_unchecked() }; //Safety is checked above.
+            assert_eq!(
+                r,
+                crate::error::Error::Io(std::io::Error::from(std::io::ErrorKind::InvalidInput))
+            );
+        }
+        Ok(())
     }
 }

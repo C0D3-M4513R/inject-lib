@@ -1,9 +1,8 @@
-use crate::platforms::platform::macros::{check_ptr, err};
+use super::macros::{check_ptr, err};
 use crate::Result;
 use log::{debug, error, info, trace, warn};
 use once_cell::sync::OnceCell;
-use std::borrow::Borrow;
-use std::fmt::{write, Display, Formatter};
+use std::fmt::{Display, Formatter};
 use winapi::shared::minwindef::{DWORD, FALSE};
 use winapi::um::handleapi::CloseHandle;
 use winapi::um::processthreadsapi::{GetCurrentProcess, OpenProcess};
@@ -13,6 +12,8 @@ use winapi::um::winnt::{
 };
 use winapi::um::wow64apiset::IsWow64Process2;
 
+///Represents a Process.
+///Holds various information about the open Process handle, to ensure better function performance.
 #[derive(Debug)]
 pub struct Process {
     //I save this as usize rather than Handle, because usize is sync.
@@ -31,6 +32,8 @@ impl Process {
             wow: Default::default(),
         })
     }
+    ///Constructs a Process, using a pseudo-handle.
+    ///That is a special type of handle. It does not actually exists, but just works. (except in ntdll)
     pub fn self_proc() -> &'static Self {
         static PRC: OnceCell<Process> = OnceCell::new();
         PRC.get_or_init(|| Process {
@@ -39,6 +42,10 @@ impl Process {
             perms: PROCESS_ALL_ACCESS,
             wow: Default::default(),
         })
+    }
+    ///Checks, if this process has real handle
+    pub fn has_real_handle(&self) -> bool {
+        self.get_proc() != unsafe { GetCurrentProcess() }
     }
     ///Returns true, if the supplied process-handle is running under WOW, otherwise false.
     ///# Safety
@@ -68,6 +75,8 @@ impl Process {
             .copied()
     }
     ///Returns true, if the supplied process-handle is running under WOW, otherwise false.
+    #[must_use]
+    //todo: where can we replace Self::self_proc().is_under_wow() with cfg statements? where is it useful?
     pub fn is_under_wow(&self) -> Result<bool> {
         if self.has_perm(PROCESS_QUERY_INFORMATION)
             || self.has_perm(PROCESS_QUERY_LIMITED_INFORMATION)
@@ -79,31 +88,30 @@ impl Process {
             )))
         }
     }
+    ///Get the contained process Handle
+    #[must_use]
     pub fn get_proc(&self) -> HANDLE {
         self.proc as HANDLE
     }
+    ///Get the pid, the process Handle represents
+    #[must_use]
     pub fn get_pid(&self) -> u32 {
         self.pid
     }
+    ///Checks if the process handle has a specific permission.
+    #[must_use]
     pub fn has_perm(&self, perm: DWORD) -> bool {
         return self.perms & perm == perm;
     }
 }
 
 impl Drop for Process {
+    ///Closes the Process Handle properly
     fn drop(&mut self) {
         trace!("Cleaning Process Handle");
         if unsafe { CloseHandle(self.proc as HANDLE) } == FALSE {
             error!("Error during Process Handle cleanup!");
-            //Supress unused_must_use warning. This is intended, but one cannot use allow, to supress this?
-            //todo: a bit hacky? Is there a better way, to achieve something similar?
-            crate::platforms::platform::macros::void_res(
-                crate::platforms::platform::macros::err::<String>(
-                    "CloseHandle of ".to_string() + std::stringify!($name),
-                ),
-            );
-            //Do not panic here, since it could cause to an abort.
-            // panic!("Error during cleanup");
+            err::<String>("CloseHandle of ".to_string() + std::stringify!($name));
         }
     }
 }
@@ -112,8 +120,24 @@ impl Display for Process {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "(proc:{:x},perms:{:x}, wow:{:#?})",
-            self.proc as usize, self.perms, self.wow
+            "(proc:{:x},pid: {},perms:{:x}, wow:{:#?})",
+            self.proc as usize, self.pid, self.perms, self.wow
         )
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use winapi::um::winnt::PROCESS_ALL_ACCESS;
+
+    #[test]
+    fn new() {
+        let r = super::Process::new(std::process::id(), PROCESS_ALL_ACCESS);
+        assert!(r.is_ok(), "{}", r.unwrap_err());
+    }
+
+    #[test]
+    fn has_perm() {
+        assert!(super::Process::self_proc().has_perm(PROCESS_ALL_ACCESS))
     }
 }

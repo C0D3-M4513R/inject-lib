@@ -1,5 +1,5 @@
+use super::macros::err;
 use crate::error::Error;
-use crate::platforms::platform::macros::err;
 use crate::Result;
 use log::{info, trace};
 use std::ops::Deref;
@@ -8,11 +8,12 @@ use winapi::shared::ntdef::HANDLE;
 use winapi::um::synchapi::WaitForSingleObject;
 use winapi::um::winbase::INFINITE;
 
+///This class represents a Thread handle.
+///It exists mostly, to have a destructor for a Handle.
 #[repr(transparent)]
 pub struct Thread {
     thread: HANDLE,
 }
-
 impl Thread {
     ///# Safety
     ///User must ensure, that thread is a valid Thread handle.
@@ -63,15 +64,7 @@ impl Drop for Thread {
         trace!("Cleaning Thread Handle");
         if unsafe { winapi::um::handleapi::CloseHandle(self.thread) } == FALSE {
             log::error!("Error during cleanup!");
-            //Supress unused_must_use warning. This is intended, but one cannot use allow, to supress this?
-            //todo: a bit hacky? Is there a better way, to achieve something similar?
-            crate::platforms::platform::macros::void_res(
-                crate::platforms::platform::macros::err::<String>(
-                    "CloseHandle of Thread".to_string(),
-                ),
-            );
-            //Panic's during drop could lead to abort.
-            // panic!("Error during cleanup");
+            err::<String>("CloseHandle of Thread".to_string());
         }
     }
 }

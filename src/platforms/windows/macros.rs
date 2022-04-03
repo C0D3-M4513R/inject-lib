@@ -20,7 +20,7 @@ macro_rules! check_ptr {
     ($name:ident($($args:expr),*),$predicate:expr)=>{
         {
             let _tmp = unsafe{$name($($args),*)};
-            if $crate::platforms::platform::macros::__call__(_tmp,$predicate){
+            if $crate::platforms::windows::macros::__call__(_tmp,$predicate){
                 return Err($crate::error::Error::from(std::stringify!($name)));
             } else{
                _tmp
@@ -28,7 +28,7 @@ macro_rules! check_ptr {
         }
     };
     ($name:ident($($args:expr),*))=>{
-        $crate::platforms::platform::macros::check_ptr!($name($($args),*),|v|v.is_null())
+        $crate::platforms::windows::macros::check_ptr!($name($($args),*),|v|v.is_null())
     };
 }
 pub(crate) use check_ptr;

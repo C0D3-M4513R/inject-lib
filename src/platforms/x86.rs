@@ -1,7 +1,6 @@
 use crate::Result;
 use log::{debug, trace};
 use ntapi::ntapi_base::{CLIENT_ID64, PCLIENT_ID64};
-use ntapi::ntrtl::RtlCreateUserThread;
 use winapi::shared::basetsd::SIZE_T;
 use winapi::shared::minwindef::{BOOL, DWORD, FALSE, LPVOID, MAX_PATH};
 use winapi::shared::ntdef::{
@@ -11,7 +10,9 @@ use winapi::um::winnt::{
     BOOLEAN, CONTEXT, HANDLE, PHANDLE, PSECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR,
 };
 
+///This struct holds the necessary data for a RTLCreateThread call all in once place, so it can be accessed easily, by pointer manipulation.
 #[repr(C)]
+#[allow(non_snake_case)]
 pub(crate) struct RtlCreateThreadParam {
     pub ProcessHandle: u64,      //ptr
     pub SecurityDescriptor: u64, //ptr
@@ -25,7 +26,7 @@ pub(crate) struct RtlCreateThreadParam {
     pub ClientID: u64,       //ptr
 }
 
-///This Calls va, with the call-specification of RtlCreateThreadParam.
+///This Calls va in a x64 context, with the call-specification of RtlCreateThreadParam.
 unsafe fn asm(va: u64, params: *mut RtlCreateThreadParam) -> NTSTATUS {
     let mut esp = (0usize, 0usize);
     //Save Previous esp. (Not that it will do any good, if it isn't aligned afterwards.
@@ -99,7 +100,8 @@ unsafe fn asm(va: u64, params: *mut RtlCreateThreadParam) -> NTSTATUS {
     debug!("esp is {:x}, was {:x}, return is {:x}", esp.1, esp.0, r);
     r
 }
-
+///This function will call a function specified by va, with the same Call arguments, that you would call RTLCreateRemoteThread.
+///This function is only intended to work with RTLCreateRemoteThread
 pub(crate) unsafe fn exec(
     va: u64,
     process_handle: HANDLE,
