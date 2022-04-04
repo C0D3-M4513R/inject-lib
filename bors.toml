@@ -1,1 +1,1 @@
-status = ["Lint Code Base","rustfmt","Rust Tests"]
+status = ["build-ubuntu","build","build-beta","rustfmt"]
