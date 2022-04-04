@@ -12,6 +12,7 @@ env:
 
 jobs:
   build:
+    name: "build"
     runs-on: windows-latest
     strategy:
       matrix:
@@ -32,6 +33,7 @@ jobs:
           command: test
           args: ${{ matrix.args }} --target ${{ matrix.target }}
   build-ubuntu:
+    name: "build-ubuntu"
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -52,6 +54,7 @@ jobs:
           args: ${{ matrix.args }} --features ntdll
 
   build-beta:
+    name: "build-beta"
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
