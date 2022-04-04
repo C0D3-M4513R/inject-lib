@@ -11,6 +11,13 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  ci:
+    name: "build-ci"
+    needs: ["build", "build-ubuntu", "build-beta"]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Done
+        run: exit 0
   build:
     name: "build"
     runs-on: windows-latest

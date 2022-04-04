@@ -1,1 +1,1 @@
-status = ["build-ubuntu","build","build-beta","rustfmt"]
+status = ["build-ci","fmt-ci","rustfmt"]
