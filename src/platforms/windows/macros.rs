@@ -1,17 +1,11 @@
 #![cfg(target_os = "windows")]
 
 use crate::error::Error;
-use log::{debug, error, info, trace, warn};
 use std::fmt::Display;
 use winapi::um::errhandlingapi::GetLastError;
 
-///NOP function.
-///This exists, to do the same as #[allow(unused_must_use)].
-///The above doesn't work for me right now though.
-#[inline]
-pub fn void_res<T>(_: T) {}
-
 ///Calls a closure
+#[doc(hidden)]
 pub(crate) fn __call__<T, R>(arg: T, f: impl FnOnce(T) -> R) -> R {
     f(arg)
 }
@@ -19,6 +13,7 @@ pub(crate) fn __call__<T, R>(arg: T, f: impl FnOnce(T) -> R) -> R {
 macro_rules! check_ptr {
     ($name:ident($($args:expr),*),$predicate:expr)=>{
         {
+            #[allow(unsafe_op_in_unsafe_fn)]//We might call this in a unsafe function
             let _tmp = unsafe{$name($($args),*)};
             if $crate::platforms::windows::macros::__call__(_tmp,$predicate){
                 return Err($crate::error::Error::from(std::stringify!($name)));
@@ -39,6 +34,6 @@ where
     E: Display,
 {
     let err = unsafe { GetLastError() };
-    error!("{} failed! Errcode is:'{}'. Check, what the error code means here:'https://docs.microsoft.com/en-us/windows/win32/debug/system-error-codes'", fn_name, err);
+    crate::error!("{} failed! Errcode is:'{}'. Check, what the error code means here:'https://docs.microsoft.com/en-us/windows/win32/debug/system-error-codes'", fn_name, err);
     Error::Winapi(fn_name.to_string(), err)
 }

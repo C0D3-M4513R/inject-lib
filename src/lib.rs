@@ -1,17 +1,28 @@
-//#![cfg_attr(feature = "nightly", feature(asm,global_asm, asm_const))]
-#[warn(missing_docs)]
-extern crate core;
+#![warn(missing_docs)]
+///This Crate Provides functionality, for injecting dlls into other processes.
+///Most of the crate is right now accessible through the [Injector] class.
+///
+///You will need to provide a pid, and a dll to inject. This crate will do the rest for you.
+///
+///The main focus will always be on performing the injection reliable.
+///
+///If you have any suggestions, on improving the outfacing api of this crate create an issue, or pr.
+///I am not sure yet, if I like this design.
+///
+///Linux support may come, but I am unsure if I will get to it. (and how easy it will be).
 
-use log::{debug, trace, warn};
-use std::path::PathBuf;
 ///This struct will expose certain module private functions, to actually use the api.
 #[derive(Debug, Clone)]
 pub struct Injector<'a> {
+    ///The path to a dll. This may be in any format, that rust understands
     pub dll: &'a str,
+    ///The pid the dll should be injected into
     pub pid: u32,
 }
 
 pub(crate) type Result<T> = std::result::Result<T, error::Error>;
+pub(crate) use log::{debug, error, info, trace, warn};
+use std::path::PathBuf;
 
 pub mod error;
 mod platforms;

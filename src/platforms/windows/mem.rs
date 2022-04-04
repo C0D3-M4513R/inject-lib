@@ -2,9 +2,8 @@ use crate::Result;
 use std::fmt::{Display, Formatter};
 use winapi::shared::minwindef::{FALSE, LPCVOID, LPVOID};
 
-use super::macros::{err, void_res};
+use super::macros::err;
 use super::process::Process;
-use log::{debug, error, info, trace, warn};
 use winapi::um::memoryapi::{VirtualAllocEx, VirtualFreeEx, WriteProcessMemory};
 use winapi::um::winnt::{
     MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE, PAGE_READWRITE,
@@ -116,9 +115,9 @@ impl<'a> Display for MemPage<'a> {
 impl<'a> Drop for MemPage<'a> {
     ///Free Memory
     fn drop(&mut self) {
-        trace!("Releasing VirtualAlloc'd Memory");
+        crate::trace!("Releasing VirtualAlloc'd Memory");
         if unsafe { VirtualFreeEx(self.proc.get_proc(), self.addr, 0, MEM_RELEASE) } == FALSE {
-            error!("Error during cleanup! VirtualFreeEx with MEM_RELEASE should not fail according to doc, but did anyways. A memory page will stay allocated. Addr:{:x},size:{:x}",self.addr as usize,self.size);
+            crate::error!("Error during cleanup! VirtualFreeEx with MEM_RELEASE should not fail according to doc, but did anyways. A memory page will stay allocated. Addr:{:x},size:{:x}",self.addr as usize,self.size);
             err::<&str>("VirtualFreeEx of VirtualAllocEx");
         }
     }

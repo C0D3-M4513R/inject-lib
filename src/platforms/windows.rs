@@ -3,7 +3,7 @@ mod macros;
 
 use crate::{strip_path, Injector, Result};
 use macros::check_ptr;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 
 use log::{debug, error, info, trace, warn};
 use pelite::{Pod, Wrap};
@@ -541,7 +541,7 @@ fn get_dll_export(name: &str, path: String) -> Result<u32> {
 #[cfg(test)]
 mod test {
     use crate::{Injector, Result};
-    use std::ffi::{OsStr, OsString};
+    use std::ffi::OsString;
     use std::os::windows::ffi::OsStrExt;
     use winapi::um::tlhelp32::MODULEENTRY32W;
     use winapi::um::winnt::PROCESS_ALL_ACCESS;
@@ -642,17 +642,18 @@ mod test {
     }
 
     #[test]
-    fn get_module_in_pid() {
-        let o = super::get_module_in_pid(
+    fn get_module_in_pid() -> Result<()> {
+        let _ = super::get_module_in_pid(
             std::process::id(),
             |m| {
                 super::predicate(
                     |m: &MODULEENTRY32W| m.modBaseAddr as u64,
-                    |x| super::cmp("kernel32.dll")(&x),
+                    |x| super::cmp("KERNEL32.DLL")(&x),
                 )(m, m.szModule.to_vec())
             },
             None,
-        );
+        )?;
+        Ok(())
     }
 
     #[test]

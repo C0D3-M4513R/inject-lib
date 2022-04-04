@@ -2,7 +2,7 @@
 use ntapi::ntapi_base::KPRIORITY;
 use ntapi::ntldr::LDR_DLL_LOAD_REASON;
 use ntapi::ntpsapi::GDI_HANDLE_BUFFER64;
-use winapi::shared::basetsd::{DWORD64, PDWORD64, ULONG64};
+use winapi::shared::basetsd::ULONG64;
 use winapi::shared::minwindef::PULONG;
 use winapi::shared::ntdef::{BOOLEAN, CHAR, NTSTATUS, UCHAR, ULONG, UNICODE_STRING64, USHORT};
 use winapi::um::winnt::{

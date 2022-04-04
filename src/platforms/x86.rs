@@ -1,14 +1,8 @@
 use crate::Result;
-use log::{debug, trace};
 use ntapi::ntapi_base::{CLIENT_ID64, PCLIENT_ID64};
 use winapi::shared::basetsd::SIZE_T;
-use winapi::shared::minwindef::{BOOL, DWORD, FALSE, LPVOID, MAX_PATH};
-use winapi::shared::ntdef::{
-    NTSTATUS, NT_ERROR, NT_WARNING, PULONG, PVOID, PVOID64, ULONG, ULONGLONG,
-};
-use winapi::um::winnt::{
-    BOOLEAN, CONTEXT, HANDLE, PHANDLE, PSECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR,
-};
+use winapi::shared::ntdef::{NTSTATUS, PVOID, ULONG};
+use winapi::um::winnt::{BOOLEAN, HANDLE, PSECURITY_DESCRIPTOR};
 
 ///This struct holds the necessary data for a RTLCreateThread call all in once place, so it can be accessed easily, by pointer manipulation.
 #[repr(C)]
@@ -33,8 +27,8 @@ unsafe fn asm(va: u64, params: *mut RtlCreateThreadParam) -> NTSTATUS {
     core::arch::asm!("mov {},esp",lateout(reg) esp.0 ,options(nomem,preserves_flags,nostack));
     //https://github.com/rwfpl/rewolf-wow64ext/blob/fd28b57fe926f3e57540850c37cdbcc766173dba/src/internal.h#L26
     //https://github.com/rwfpl/rewolf-wow64ext/blob/master/src/internal.h
-    debug!("Start of scary asm block.");
-    let mut r: NTSTATUS = 0;
+    crate::debug!("Start of scary asm block.");
+    let mut r: NTSTATUS;
     core::arch::asm!(
         "push 0x33",
         "call 2f",
@@ -97,7 +91,7 @@ unsafe fn asm(va: u64, params: *mut RtlCreateThreadParam) -> NTSTATUS {
 		There is no possible way to recover (and there likely will never be).\
 		IF you encounter this in production, open an issue. This is a CRITICAL bug."
     );
-    debug!("esp is {:x}, was {:x}, return is {:x}", esp.1, esp.0, r);
+    crate::debug!("esp is {:x}, was {:x}, return is {:x}", esp.1, esp.0, r);
     r
 }
 ///This function will call a function specified by va, with the same Call arguments, that you would call RTLCreateRemoteThread.
@@ -118,7 +112,7 @@ pub(crate) unsafe fn exec(
         UniqueProcess: 0,
         UniqueThread: 0,
     };
-    trace!(
+    crate::trace!(
         "{:x}({:x},{:x},{:x},{:x},{:x},{:x},{:x},{:x},{:x},{:x})",
         va,
         process_handle as usize,

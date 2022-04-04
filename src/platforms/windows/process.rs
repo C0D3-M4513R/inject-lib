@@ -1,6 +1,5 @@
 use super::macros::{check_ptr, err};
 use crate::Result;
-use log::{debug, error, info, trace, warn};
 use once_cell::sync::OnceCell;
 use std::fmt::{Display, Formatter};
 use winapi::shared::minwindef::{DWORD, FALSE};
@@ -44,8 +43,19 @@ impl Process {
         })
     }
     ///Checks, if this process has real handle
+    #[must_use]
     pub fn has_real_handle(&self) -> bool {
         self.get_proc() != unsafe { GetCurrentProcess() }
+    }
+    ///Returns Error::IO:(ErrorKind::InvalidInput), if the process is ![has_real_handle]
+    #[must_use]
+    pub fn err_pseudo_handle(&self) -> Result<()> {
+        if !self.has_real_handle() {
+            return Err(crate::error::Error::Io(std::io::Error::from(
+                std::io::ErrorKind::InvalidInput,
+            )));
+        }
+        Ok(())
     }
     ///Returns true, if the supplied process-handle is running under WOW, otherwise false.
     ///# Safety
@@ -61,7 +71,7 @@ impl Process {
         {
             return Err(err("IsWow64Process2 number 1"));
         }
-        trace!("proc:{:#x},native:{:#x}", process_machine, native_machine);
+        crate::trace!("proc:{:#x},native:{:#x}", process_machine, native_machine);
 
         //The value will be IMAGE_FILE_MACHINE_UNKNOWN if the target process is not a WOW64 process; otherwise, it will identify the type of WoW process.
         Ok(process_machine != IMAGE_FILE_MACHINE_UNKNOWN)
@@ -108,9 +118,9 @@ impl Process {
 impl Drop for Process {
     ///Closes the Process Handle properly
     fn drop(&mut self) {
-        trace!("Cleaning Process Handle");
+        crate::trace!("Cleaning Process Handle");
         if unsafe { CloseHandle(self.proc as HANDLE) } == FALSE {
-            error!("Error during Process Handle cleanup!");
+            crate::error!("Error during Process Handle cleanup!");
             err::<String>("CloseHandle of ".to_string() + std::stringify!($name));
         }
     }
@@ -135,7 +145,10 @@ mod test {
         let r = super::Process::new(std::process::id(), PROCESS_ALL_ACCESS);
         assert!(r.is_ok(), "{}", r.unwrap_err());
     }
-
+    #[test]
+    fn has_real_handle() {
+        assert!(!super::Process::self_proc().has_real_handle())
+    }
     #[test]
     fn has_perm() {
         assert!(super::Process::self_proc().has_perm(PROCESS_ALL_ACCESS))

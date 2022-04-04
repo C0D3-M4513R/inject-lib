@@ -1,15 +1,34 @@
+///This module contains all error Types.
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 
 #[derive(Debug)]
+///This is the error type for this crate
 pub enum Error {
+    ///This represents an error from the regular windows api
+    ///String is the method the error occurred in
+    ///u32 is the Error, that occurred
     Winapi(String, u32),
+    ///Gets returned from NTDLL calls.
+    ///This maps, if NTStatus is considered a Warning or Error.
+    ///(Because typically NTDLL calls don't succeed, even if the return type is just a Warning)
     Ntdll(i32),
+    ///Gets returned, if a Wide String cannot be converted into a regular string.
     WTFConvert(OsString), //Windows u16 string stuff
+    ///Passes errors from std::io.
     Io(std::io::Error),
     #[cfg(target_family = "windows")]
+    ///Contains errors from the pelite crate.
+    ///
+    ///See [pelite::Error]
     Pelite(pelite::Error),
+    ///This is mapped, if a certain thing could potentially be supported with more work, but just has not been implemented yet.
     Unsupported(Option<String>),
+    ///This is mapped, if an action cannot be completed.
+    ///Since this is not a particularly helpful error code, I will try and minimise it's use.
+    ///
+    ///This is not actually depracticed. It is just there, to warn me every time I use this.
+    #[deprecated(note = "unhelpful error message")]
     Unsuccessful(Option<String>),
 }
 
@@ -56,8 +75,10 @@ impl Error {
         }
     }
     ///Gets the contents of Error::Unsuccessful, if self holds data of that type
+    #[deprecated(note = "unhelpful error message")]
     fn get_unsuccessful(&self) -> Option<&Option<String>> {
         match self {
+            #[allow(deprecated)]
             Error::Unsuccessful(x) => Some(x),
             _ => None,
         }
@@ -83,6 +104,7 @@ impl PartialEq<Self> for Error {
                 #[cfg(target_family = "windows")]
                 Error::Pelite(x) => other.get_pelite()?.eq(x),
                 Error::Unsupported(x) => other.get_unsupported()?.eq(x),
+                #[allow(deprecated)]
                 Error::Unsuccessful(x) => other.get_unsuccessful()?.eq(x),
             })
         }
@@ -123,6 +145,7 @@ impl Display for Error {
                 "Unsupported({})",
                 if let Some(s) = r { s } else { "None" }
             ),
+            #[allow(deprecated)]
             Error::Unsuccessful(r) => write!(
                 f,
                 "Unsuccessful({})",
@@ -136,15 +159,22 @@ impl Display for Error {
 }
 
 #[derive(Debug, Clone)]
+///Abstracts a NTStatus return type.
 pub enum Ntdll {
+    ///Maps, if Ntdll considers the NTStatus a Success
     Success(i32),
+    ///Maps, if Ntdll considers the NTStatus a Information
     Information(i32),
+    ///Maps, if Ntdll considers the NTStatus a Warning
     Warning(i32),
+    ///Maps, if Ntdll considers the NTStatus an Error
     Error(i32),
+    ///Maps, if nothing else maps. Ideally this should go unused
     Other(i32),
 }
 
 impl Ntdll {
+    ///Get the contained Variable in the Ntdll enum
     pub fn get_status(&self) -> &i32 {
         match self {
             Ntdll::Error(v) => v,
@@ -168,7 +198,7 @@ impl Display for Ntdll {
 }
 
 #[cfg(windows)]
-pub mod ntdll {
+mod ntdll {
     use crate::error::{Error, Ntdll};
     use log::error;
     use winapi::shared::ntdef::{NTSTATUS, NT_ERROR, NT_INFORMATION, NT_SUCCESS, NT_WARNING};
