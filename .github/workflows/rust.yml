@@ -11,7 +11,15 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  ci:
+    name: "build-ci"
+    needs: ["build", "build-ubuntu", "build-beta"]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Done
+        run: exit 0
   build:
+    name: "build"
     runs-on: windows-latest
     strategy:
       matrix:
@@ -32,6 +40,7 @@ jobs:
           command: test
           args: ${{ matrix.args }} --target ${{ matrix.target }}
   build-ubuntu:
+    name: "build-ubuntu"
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -51,7 +60,8 @@ jobs:
           command: test
           args: ${{ matrix.args }} --features ntdll
 
-  build-nightly:
+  build-beta:
+    name: "build-beta"
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -62,7 +72,7 @@ jobs:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: beta
           target: ${{ matrix.target }}
       - uses: actions-rs/cargo@v1
         with:

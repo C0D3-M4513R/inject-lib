@@ -27,8 +27,14 @@ env:
 # Set the Job #
 ###############
 jobs:
+    ci:
+        name: "fmt-ci"
+        needs: [ "format"]
+        runs-on: ubuntu-latest
+        steps:
+            - name: Done
+              run: exit 0
     format:
-        name: rustfmt
         runs-on: ${{ matrix.os }}
         strategy:
             matrix:
