@@ -1,2 +1,2 @@
-status = ["build-ci","fmt-ci","rustfmt","security_audit"]
+status = ["build-ci","fmt-ci","rustfmt"]
 commit_title = "merge: ${PR_REFS}"
