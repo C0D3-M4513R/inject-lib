@@ -4,10 +4,10 @@ use winapi::shared::minwindef::{FALSE, LPCVOID, LPVOID};
 
 use super::macros::err;
 use super::process::Process;
-use winapi::um::memoryapi::{VirtualAllocEx, VirtualFreeEx, WriteProcessMemory};
+use winapi::um::memoryapi::{ReadProcessMemory, VirtualAllocEx, VirtualFreeEx, WriteProcessMemory};
 use winapi::um::winnt::{
     MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE, PAGE_READWRITE,
-    PROCESS_VM_OPERATION, PROCESS_VM_WRITE,
+    PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE,
 };
 
 #[derive(Debug)]
@@ -89,6 +89,42 @@ impl<'a> MemPage<'a> {
         debug_assert!(n == buffer.len());
         Ok(n)
     }
+    ///Reads the contents of the memory page.
+    ///# Panic
+    /// This Panics, if the read number of bytes exceed size.
+    pub fn read(&self, size: usize) -> Result<Vec<u8>> {
+        if !self.proc.has_perm(PROCESS_VM_READ) {
+            return Err(crate::error::Error::Io(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied,
+            )));
+        }
+        let mut buf = Vec::with_capacity(size);
+        let mut o = 0;
+        if unsafe {
+            ReadProcessMemory(
+                self.proc.get_proc(),
+                self.addr,
+                buf.as_mut_ptr() as LPVOID,
+                size,
+                &mut o as *mut usize,
+            )
+        } == FALSE
+        {
+            return Err(err("ReadProcessMemory"));
+        }
+        assert!(
+            o <= size,
+            "Buffer overflow occurred. Results may cause unknown code to execute. Aborting {}>{}",
+            o,
+            size
+        );
+        //Get buf to size
+        unsafe {
+            buf.set_len(o);
+            buf.shrink_to_fit();
+        }
+        Ok(buf)
+    }
     ///Get the Address, at which the MemPage as allocated
     #[must_use]
     pub fn get_address(&self) -> LPVOID {
@@ -119,6 +155,9 @@ impl<'a> Drop for MemPage<'a> {
         if unsafe { VirtualFreeEx(self.proc.get_proc(), self.addr, 0, MEM_RELEASE) } == FALSE {
             crate::error!("Error during cleanup! VirtualFreeEx with MEM_RELEASE should not fail according to doc, but did anyways. A memory page will stay allocated. Addr:{:x},size:{:x}",self.addr as usize,self.size);
             err::<&str>("VirtualFreeEx of VirtualAllocEx");
+            //Panic during tests, to test of proper disposal of object
+            #[cfg(test)]
+            panic!("VirtualFreeEx resulted in an error");
         }
     }
 }
@@ -148,18 +187,29 @@ mod test {
     #[test]
     fn new_and_write() -> Result<()> {
         let buf: Vec<u8> = (0..255).collect();
+        let proc = super::super::process::Process::self_proc();
         //write mem
-        let mut m = super::MemPage::new(
-            super::super::process::Process::self_proc(),
-            buf.len(),
-            false,
-        )?;
+        let mut m = super::MemPage::new(proc, buf.len(), false)?;
         let w = m.write(buf.as_slice())?;
         assert!(w >= buf.len());
         //and read it again
         let rb: *const [u8; 255] = m.get_address() as *const [u8; 255];
         let rb = unsafe { *rb };
         assert_eq!(rb, buf.as_slice());
+        assert_eq!(buf, m.read(w)?);
+        Ok(())
+    }
+
+    #[test]
+    fn other_proc() -> Result<()> {
+        let buf: Vec<u8> = (0..255).collect();
+        let (mut c, proc) = super::super::test::create_cmd();
+        //write mem
+        let mut m = super::MemPage::new(&proc, buf.len(), false)?;
+        let w = m.write(buf.as_slice())?;
+        assert!(w >= buf.len());
+        assert_eq!(m.read(w)?, buf);
+        c.kill().unwrap();
         Ok(())
     }
 }

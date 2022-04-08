@@ -6,12 +6,12 @@ use winapi::shared::basetsd::ULONG64;
 use winapi::shared::minwindef::PULONG;
 use winapi::shared::ntdef::{BOOLEAN, CHAR, NTSTATUS, UCHAR, ULONG, UNICODE_STRING64, USHORT};
 use winapi::um::winnt::{
-    FLS_MAXIMUM_AVAILABLE, HANDLE, LARGE_INTEGER, LIST_ENTRY64, PVOID, PVOID64, ULARGE_INTEGER,
-    ULONGLONG,
+    FLS_MAXIMUM_AVAILABLE, HANDLE, LARGE_INTEGER, LIST_ENTRY64, PULONGLONG, PVOID, PVOID64,
+    ULARGE_INTEGER, ULONGLONG,
 };
 //This is the prototype, of the NtReadVirtualMemory function
 pub(crate) type FnNtWOW64ReadVirtualMemory64 =
-    unsafe extern "system" fn(HANDLE, PVOID64, PVOID64, ULONG, ULONG64) -> NTSTATUS;
+    unsafe extern "system" fn(HANDLE, PVOID64, PVOID, ULONGLONG, PULONGLONG) -> NTSTATUS;
 //This is the prototype, of the NtReadVirtualMemory function
 pub(crate) type FnNtReadVirtualMemory =
     unsafe extern "system" fn(HANDLE, PVOID, PVOID, ULONG, PULONG) -> NTSTATUS;
@@ -59,6 +59,7 @@ STRUCT! {struct PEB64 {
     BitField: BOOLEAN,
     Mutant: ULONG64, // WOW64_POINTER
     ImageBaseAddress: ULONG64, // WOW64_POINTER
+    // Padding_Revserved: u32,
     Ldr: ULONG64, // WOW64_POINTER
     ProcessParameters: ULONG64, // WOW64_POINTER
     SubSystemData: ULONG64, // WOW64_POINTER
@@ -142,7 +143,7 @@ STRUCT! {struct PEB64 {
 STRUCT! {struct PEB_LDR_DATA64 {
     Length: ULONG,
     Initialized: BOOLEAN,
-    SsHandle: HANDLE,
+    SsHandle: PVOID64,
     InLoadOrderModuleList: LIST_ENTRY64,
     InMemoryOrderModuleList: LIST_ENTRY64,
     InInitializationOrderModuleList: LIST_ENTRY64,

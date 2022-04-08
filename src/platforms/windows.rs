@@ -6,6 +6,10 @@ use macros::check_ptr;
 use std::ffi::OsString;
 
 use log::{debug, error, info, trace, warn};
+#[cfg(feature = "ntdll")]
+use ntapi::ntapi_base::CLIENT_ID64;
+#[cfg(feature = "ntdll")]
+use ntapi::ntrtl::RtlCreateUserThread;
 use pelite::{Pod, Wrap};
 use std::mem::size_of;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -20,18 +24,19 @@ use winapi::um::tlhelp32::{
     TH32CS_SNAPMODULE32, TH32CS_SNAPPROCESS,
 };
 use winapi::um::winnt::{
-    PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION, PROCESS_VM_READ,
-    PROCESS_VM_WRITE,
+    PROCESS_ALL_ACCESS, PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION,
+    PROCESS_VM_READ, PROCESS_VM_WRITE,
 };
 
 mod mem;
 #[cfg(feature = "ntdll")]
 mod ntdll;
-mod process;
+pub(super) mod process;
 mod thread;
 
 #[cfg(feature = "ntdll")]
 use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
+use winapi::shared::ntdef::PHANDLE;
 
 use crate::error::Error;
 use mem::MemPage;
@@ -231,26 +236,56 @@ impl<'a> Injector<'a> {
             entry_point as usize
         );
         //Execute LoadLibraryW in remote thread, and wait for dll to load
-        #[cfg(all(feature = "x86tox64", target_arch = "x86"))]
+        #[cfg(feature = "x86tox64")]
         {
             //This method is intended to be only used, when we are compiled as x86, and are injecting to x64.
-            if self_is_under_wow && !pid_is_under_wow {
-                let ntdll = ntdll::NTDLL::new()?;
-                let (path, base) = ntdll.get_ntdll_base_addr(pid_is_under_wow, &proc)?;
-                let rva = get_dll_export(path.as_str(), "RtlCreateUserThread".to_string())?;
-                let va = base + rva as u64;
-                let (r, t, _c) = unsafe {
-                    crate::platforms::x86::exec(
-                        va,
-                        proc.get_proc(),
-                        std::ptr::null_mut(),
-                        0,
-                        0,
-                        0,
-                        0,
-                        entry_point as u64,
-                        mem.get_address() as u64,
-                    )?
+            let ntdll = self_is_under_wow && !pid_is_under_wow;
+            #[cfg(test)]
+            //Lock this thread for the minimal amount of time possible
+            let ntdll = { test::FNS_M.with(|x| x.exec_fn_in_proc.get()) || ntdll };
+            if ntdll {
+                #[cfg(target_arch = "x86")]
+                let (r, t, _c) = {
+                    let ntdll = ntdll::NTDLL::new()?;
+                    let (path, base) = ntdll.get_ntdll_base_addr(pid_is_under_wow, &proc)?;
+                    let rva = get_dll_export("RtlCreateUserThread", path)?;
+                    let va = base + rva as u64;
+                    unsafe {
+                        crate::platforms::x86::exec(
+                            va,
+                            proc.get_proc(),
+                            std::ptr::null_mut(),
+                            0,
+                            0,
+                            0,
+                            0,
+                            entry_point as u64,
+                            mem.get_address() as u64,
+                        )?
+                    }
+                };
+                #[cfg(not(target_arch = "x64"))]
+                let (r, t, _c) = {
+                    let mut c = CLIENT_ID64 {
+                        UniqueProcess: 0,
+                        UniqueThread: 0,
+                    };
+                    let mut t = std::ptr::null_mut();
+                    let r = unsafe {
+                        RtlCreateUserThread(
+                            proc.get_proc(),
+                            std::ptr::null_mut(),
+                            0,
+                            0,
+                            0,
+                            0,
+                            std::mem::transmute(entry_point as usize),
+                            mem.get_address(),
+                            &mut t as PHANDLE,
+                            std::mem::transmute(&mut c as *mut CLIENT_ID64),
+                        )
+                    };
+                    (r, t, c)
                 };
                 match crate::error::Ntdll::new(r) {
                     crate::error::Ntdll::Error(v) => {
@@ -455,20 +490,14 @@ fn cmp<P: AsRef<Path>>(name: P) -> impl Fn(&dyn AsRef<Path>) -> bool {
     }
 }
 
-///Override check, to use in get_module, if we are in testing mode.
-///This is only for testing mode.
-#[cfg(test)]
-static mut GET_MODULE_USE_NTDLL: bool = false;
-
 ///Gets the base address of where a dll is loaded within a process.
 ///The dll is identified by name. name is checked against the whole file name.
 ///if the process has a pseudo-handle, the ntdll methods will not run.
 fn get_module<P: AsRef<Path>>(name: P, proc: &Process) -> Result<(String, u64)> {
     let cmp = cmp(name);
-    #[cfg(not(test))]
     let ntdll = !process::Process::self_proc().is_under_wow()? || proc.is_under_wow()?;
     #[cfg(test)]
-    let ntdll = unsafe { !GET_MODULE_USE_NTDLL };
+    let ntdll = { test::FNS_M.with(|x| x.get_module.get()) || ntdll };
     if ntdll {
         match get_module_in_pid(
             proc.get_pid(),
@@ -539,12 +568,55 @@ fn get_dll_export(name: &str, path: String) -> Result<u32> {
 }
 
 #[cfg(test)]
-mod test {
+pub mod test {
     use crate::{Injector, Result};
+    use std::cell::Cell;
     use std::ffi::OsString;
+    use std::io::Read;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::process::CommandExt;
+    use std::process::Child;
+    use std::thread::sleep;
+    use std::time::Duration;
+    use winapi::um::errhandlingapi::GetLastError;
+    use winapi::um::libloaderapi::{FreeLibrary, LoadLibraryA};
     use winapi::um::tlhelp32::MODULEENTRY32W;
+    use winapi::um::winbase::CREATE_NEW_CONSOLE;
     use winapi::um::winnt::PROCESS_ALL_ACCESS;
+
+    thread_local! {
+        pub(in super) static FNS_M:FNS=FNS::default();
+    }
+    #[derive(Debug)]
+    pub(super) struct FNS {
+        pub get_module: Cell<bool>,
+        pub exec_fn_in_proc: Cell<bool>,
+    }
+    impl Default for FNS {
+        fn default() -> Self {
+            FNS {
+                get_module: Cell::new(false),
+                exec_fn_in_proc: Cell::new(false),
+            }
+        }
+    }
+
+    pub fn create_cmd() -> (Child, super::process::Process) {
+        let c = std::process::Command::new("cmd.exe")
+            .creation_flags(CREATE_NEW_CONSOLE)
+            .spawn()
+            .unwrap();
+        sleep(Duration::from_millis(50)); //Let the process init.
+        let proc = unsafe {
+            super::process::Process::from_raw_parts(
+                c.as_raw_handle() as usize,
+                c.id(),
+                CREATE_NEW_CONSOLE | PROCESS_ALL_ACCESS,
+            )
+        };
+        (c, proc)
+    }
 
     #[test]
     fn get_windir() -> Result<()> {
@@ -643,32 +715,66 @@ mod test {
 
     #[test]
     fn get_module_in_pid() -> Result<()> {
-        let _ = super::get_module_in_pid(
-            std::process::id(),
-            |m| {
-                super::predicate(
-                    |m: &MODULEENTRY32W| m.modBaseAddr as u64,
-                    |x| super::cmp("KERNEL32.DLL")(&x),
-                )(m, m.szModule.to_vec())
-            },
-            None,
-        )?;
+        let test = |id: u32| {
+            super::get_module_in_pid(
+                id,
+                |m| {
+                    super::predicate(
+                        |m: &MODULEENTRY32W| m.modBaseAddr as u64,
+                        |x| super::cmp("ntdll.dll")(&x),
+                    )(m, m.szModule.to_vec())
+                },
+                None,
+            )
+        };
+        //test self
+        {
+            let h = unsafe { LoadLibraryA(b"ntdll.dll\0".as_ptr() as *mut i8) };
+            assert!(!h.is_null(), "Couldn't load ntdll into our current process");
+            let (s, n) = test(std::process::id())?;
+            if n != h as u64 {
+                println!("Base Address!=LoadLibraryA, {}!={}", n, h as u64)
+            };
+            let r = unsafe { FreeLibrary(h) };
+            assert_ne!(r, 0, "FreeLibrary failed, because {}", unsafe {
+                GetLastError()
+            });
+        }
+        //test other
+        {
+            let (mut c, p) = create_cmd();
+            if p.is_under_wow()? || !super::process::Process::self_proc().is_under_wow()? {
+                test(c.id())?;
+            }
+            c.kill().unwrap();
+        }
         Ok(())
     }
 
     #[test]
     fn get_module() -> Result<()> {
+        //self test
         {
             let r = super::get_module("ntdll.dll", super::process::Process::self_proc());
-            assert!(r.is_ok(), "normal get_module err:{}", r.unwrap_err());
+            assert!(r.is_ok(), "normal self get_module err:{}", r.unwrap_err());
+        }
+        let (mut c, cp) = create_cmd();
+        //other test
+        {
+            let r = super::get_module("ntdll.dll", &cp);
+            assert!(r.is_ok(), "normal other get_module err:{}", r.unwrap_err());
         }
         #[cfg(feature = "ntdll")]
         {
-            unsafe { super::GET_MODULE_USE_NTDLL = true };
             let proc = super::process::Process::new(std::process::id(), PROCESS_ALL_ACCESS)?;
+            FNS_M.with(|x| x.get_module.set(true));
             let r = super::get_module("KERNEL32.DLL", &proc);
-            assert!(r.is_ok(), "ntdll get_module:{}", r.unwrap_err());
+            let r1 = super::get_module("KERNEL32.DLL", &cp);
+            FNS_M.with(|x| x.get_module.set(false));
+            assert!(r.is_ok(), "ntdll self get_module:{}", r.unwrap_err());
+            assert!(r1.is_ok(), "ntdll other get_module:{}", r.unwrap_err());
         }
+        c.kill().unwrap();
         Ok(())
     }
 

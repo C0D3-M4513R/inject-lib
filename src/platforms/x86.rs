@@ -141,3 +141,23 @@ pub(crate) unsafe fn exec(
     let r = asm(va, &mut pass_asm as *mut RtlCreateThreadParam);
     Ok((r, thread as HANDLE, client))
 }
+
+#[cfg(test)]
+mod test {
+    use crate::Result;
+    use std::ptr::null_mut;
+
+    //defines a noop function
+    core::arch::global_asm!(".code64", "nopx64:", "enter 0,0", "leave", "ret");
+
+    #[test]
+    fn exec() -> Result<()> {
+        //I am only testing, if the asm function causes any behavior that would cause the program to exit unexpectedly
+        unsafe {
+            let a: usize;
+            core::arch::asm!("lea {},nopx64",out(reg) a,options(preserves_flags,nomem,nostack));
+            super::exec(a as u64, null_mut(), null_mut(), 0, 0, 0, 0, 0, 0)?;
+        }
+        Ok(())
+    }
+}
