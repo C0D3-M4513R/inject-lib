@@ -572,12 +572,15 @@ pub mod test {
     use crate::{Injector, Result};
     use std::cell::Cell;
     use std::ffi::OsString;
+    use std::io::Read;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::AsRawHandle;
     use std::os::windows::process::CommandExt;
     use std::process::Child;
     use std::thread::sleep;
     use std::time::Duration;
+    use winapi::um::errhandlingapi::GetLastError;
+    use winapi::um::libloaderapi::{FreeLibrary, LoadLibraryA};
     use winapi::um::tlhelp32::MODULEENTRY32W;
     use winapi::um::winbase::CREATE_NEW_CONSOLE;
     use winapi::um::winnt::PROCESS_ALL_ACCESS;
@@ -604,7 +607,7 @@ pub mod test {
             .creation_flags(CREATE_NEW_CONSOLE)
             .spawn()
             .unwrap();
-        sleep(Duration::from_millis(5)); //Let the process init.
+        sleep(Duration::from_millis(50)); //Let the process init.
         let proc = unsafe {
             super::process::Process::from_raw_parts(
                 c.as_raw_handle() as usize,
@@ -718,18 +721,31 @@ pub mod test {
                 |m| {
                     super::predicate(
                         |m: &MODULEENTRY32W| m.modBaseAddr as u64,
-                        |x| super::cmp("KERNEL32.DLL")(&x),
+                        |x| super::cmp("ntdll.dll")(&x),
                     )(m, m.szModule.to_vec())
                 },
                 None,
             )
         };
-        test(std::process::id())?;
-        let (mut c, p) = create_cmd();
-        if p.is_under_wow()?||!super::process::Process::self_proc().is_under_wow()?{
-            test(c.id())?;
+        //test self
+        {
+            let h =unsafe{ LoadLibraryA(b"ntdll.dll\0".as_ptr() as *mut i8) };
+            assert!(!h.is_null(),"Couldn't load ntdll into our current process");
+            let (s,n) = test(std::process::id())?;
+            if n!=h as u64{
+                println!("Base Address!=LoadLibraryA, {}!={}",n,h as u64)
+            };
+            let r=unsafe{ FreeLibrary(h) };
+            assert_ne!(r,0,"FreeLibrary failed, because {}",unsafe{GetLastError()});
         }
-        c.kill().unwrap();
+        //test other
+        {
+            let (mut c, p) = create_cmd();
+            if p.is_under_wow()?||!super::process::Process::self_proc().is_under_wow()?{
+                test(c.id())?;
+            }
+            c.kill().unwrap();
+        }
         Ok(())
     }
 
