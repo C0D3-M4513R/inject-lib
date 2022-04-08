@@ -31,6 +31,16 @@ impl Process {
             wow: Default::default(),
         })
     }
+    ///Creates a process from raw parts
+    #[cfg(test)]
+    pub(in super::super) unsafe fn from_raw_parts(proc: usize, pid: u32, perms: DWORD) -> Self {
+        Self {
+            proc,
+            pid,
+            perms,
+            wow: Default::default(),
+        }
+    }
     ///Constructs a Process, using a pseudo-handle.
     ///That is a special type of handle. It does not actually exists, but just works. (except in ntdll)
     pub fn self_proc() -> &'static Self {

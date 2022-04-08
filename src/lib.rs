@@ -24,6 +24,7 @@ pub(crate) type Result<T> = std::result::Result<T, error::Error>;
 pub(crate) use log::{debug, error, info, trace, warn};
 use std::path::PathBuf;
 
+///Holds all error types
 pub mod error;
 mod platforms;
 

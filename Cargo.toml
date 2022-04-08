@@ -32,6 +32,7 @@ features=[
     "memoryapi",#Allocate,Free and Write Process memory. Used in injection and ejection
     "synchapi",#Wait, until Dll is actually attached.
     "winbase",#Infinity. Used with "synchapi"
+    "impl-debug"
 ]
 
 [target.'cfg(target_family="windows")'.dependencies]
