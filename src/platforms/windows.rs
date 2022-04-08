@@ -729,19 +729,21 @@ pub mod test {
         };
         //test self
         {
-            let h =unsafe{ LoadLibraryA(b"ntdll.dll\0".as_ptr() as *mut i8) };
-            assert!(!h.is_null(),"Couldn't load ntdll into our current process");
-            let (s,n) = test(std::process::id())?;
-            if n!=h as u64{
-                println!("Base Address!=LoadLibraryA, {}!={}",n,h as u64)
+            let h = unsafe { LoadLibraryA(b"ntdll.dll\0".as_ptr() as *mut i8) };
+            assert!(!h.is_null(), "Couldn't load ntdll into our current process");
+            let (s, n) = test(std::process::id())?;
+            if n != h as u64 {
+                println!("Base Address!=LoadLibraryA, {}!={}", n, h as u64)
             };
-            let r=unsafe{ FreeLibrary(h) };
-            assert_ne!(r,0,"FreeLibrary failed, because {}",unsafe{GetLastError()});
+            let r = unsafe { FreeLibrary(h) };
+            assert_ne!(r, 0, "FreeLibrary failed, because {}", unsafe {
+                GetLastError()
+            });
         }
         //test other
         {
             let (mut c, p) = create_cmd();
-            if p.is_under_wow()?||!super::process::Process::self_proc().is_under_wow()?{
+            if p.is_under_wow()? || !super::process::Process::self_proc().is_under_wow()? {
                 test(c.id())?;
             }
             c.kill().unwrap();
