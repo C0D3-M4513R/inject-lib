@@ -725,8 +725,10 @@ pub mod test {
             )
         };
         test(std::process::id())?;
-        let (mut c, _p) = create_cmd();
-        test(c.id())?;
+        let (mut c, p) = create_cmd();
+        if p.is_under_wow()?||!super::process::Process::self_proc().is_under_wow()?{
+            test(c.id())?;
+        }
         c.kill().unwrap();
         Ok(())
     }

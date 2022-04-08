@@ -523,7 +523,7 @@ pub mod test {
                         pelite::Wrap::T32(x) => x.DllBase as u64,
                         pelite::Wrap::T64(x) => x.DllBase as u64,
                     },
-                    |x| super::super::cmp("KERNEL32.DLL")(&x),
+                    |x| super::super::cmp("ntdll.dll")(&x),
                 ),
             )
         };
@@ -537,7 +537,7 @@ pub mod test {
             let (mut c, proc) = super::super::test::create_cmd();
             let r = test(&proc);
             c.kill().unwrap();
-            assert!(r.is_ok(), "{}", r.unwrap_err());
+            assert!(r.is_ok(), "other: {}", r.unwrap_err());
         }
         Ok(())
     }
