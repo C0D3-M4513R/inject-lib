@@ -6,7 +6,9 @@ use macros::check_ptr;
 use std::ffi::OsString;
 
 use log::{debug, error, info, trace, warn};
+#[cfg(feature = "ntdll")]
 use ntapi::ntapi_base::CLIENT_ID64;
+#[cfg(feature = "ntdll")]
 use ntapi::ntrtl::RtlCreateUserThread;
 use pelite::{Pod, Wrap};
 use std::mem::size_of;
