@@ -70,7 +70,7 @@ impl<'a> Injector<'a> {
         })
     }
     ///This function will attempt, to eject a dll from another process.
-    ///Notice:This implementation blocks, and waits, until the library is injected, or the injection failed.
+    ///Notice:This implementation blocks, and waits, until the library is ejected?, or the ejection failed.
     pub fn eject(&self) -> Result<()> {
         let proc = Process::new(
             self.pid,
@@ -731,7 +731,7 @@ pub mod test {
         {
             let h = unsafe { LoadLibraryA(b"ntdll.dll\0".as_ptr() as *mut i8) };
             assert!(!h.is_null(), "Couldn't load ntdll into our current process");
-            let (s, n) = test(std::process::id())?;
+            let (_, n) = test(std::process::id())?;
             if n != h as u64 {
                 println!("Base Address!=LoadLibraryA, {}!={}", n, h as u64)
             };
