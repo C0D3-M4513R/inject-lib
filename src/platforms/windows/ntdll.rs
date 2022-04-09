@@ -11,6 +11,7 @@ use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
 use once_cell::sync::OnceCell;
 use pelite::Wrap;
 use std::ffi::OsStr;
+use std::marker::PhantomData;
 use std::ops::Shl;
 use std::os::windows::ffi::OsStrExt;
 pub use types::LDR_DATA_TABLE_ENTRY64;
@@ -47,6 +48,7 @@ impl NTDLL {
     ///If the specified version of ntdll is not loaded within that process, this function will return win an error.
     ///This case should only happen on x86 installs of windows and if explicit_x86 is true.
     ///On x86 installs of windows there is no WOW, and therefore no SysWOW64 folder.
+    #[cfg_attr(not(target_arch = "x64"), allow(unused))]
     pub(crate) fn get_ntdll_base_addr(
         &self,
         explicit_x86: bool,
@@ -287,6 +289,7 @@ impl NTDLL {
                     &mut i as *mut u64 as *mut u32,
                 )
             }
+            #[cfg(target_pointer_width = "32")]
             NtdllFn::WOW(v) => {
                 let cfn: types::FnNtWOW64ReadVirtualMemory64 = core::mem::transmute(*v);
                 cfn(
@@ -411,20 +414,15 @@ impl NTDLL {
 }
 ///Helps to differentiate between two function types
 enum NtdllFn<T> {
+    #[cfg(target_pointer_width = "32")]
     WOW(T),
     Normal(T),
 }
 impl<T> NtdllFn<T> {
-    ///Gets the content of the enum as a reference
-    pub fn get_content(&self) -> &T {
-        match self {
-            NtdllFn::WOW(t) => t,
-            NtdllFn::Normal(t) => t,
-        }
-    }
     ///Destroys the enum, and gives the contained data
     pub fn take(self) -> T {
         match self {
+            #[cfg(target_pointer_width = "32")]
             NtdllFn::WOW(t) => t,
             NtdllFn::Normal(t) => t,
         }
@@ -435,8 +433,12 @@ impl<T> NtdllFn<T> {
 #[derive(Clone)]
 struct FnNtdllWOW<'a, 'b, 'c> {
     ntdll: &'c NTDLL,
+    #[cfg(target_pointer_width = "32")]
     wow64name: &'b [u8],
+    #[cfg(target_pointer_width = "64")]
+    _phantom: PhantomData<&'b [u8]>,
     name: &'a [u8],
+    #[cfg(target_pointer_width = "32")]
     wowfn: OnceCell<usize>,
     namefn: OnceCell<usize>,
 }
@@ -445,8 +447,12 @@ impl<'a, 'b, 'c> FnNtdllWOW<'a, 'b, 'c> {
     pub(self) fn new(name: &'a [u8], wow64name: &'b [u8]) -> Result<Self> {
         Ok(FnNtdllWOW {
             ntdll: NTDLL::new()?,
+            #[cfg(target_pointer_width = "32")]
             wow64name,
+            #[cfg(target_pointer_width = "64")]
+            _phantom: PhantomData::default(),
             name,
+            #[cfg(target_pointer_width = "32")]
             wowfn: OnceCell::new(),
             namefn: OnceCell::new(),
         })

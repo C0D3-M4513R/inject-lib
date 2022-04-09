@@ -9,7 +9,17 @@
 ///If you have any suggestions, on improving the outfacing api of this crate create an issue, or pr.
 ///I am not sure yet, if I like this design.
 ///
-///Linux support may come, but I am unsure if I will get to it. (and how easy it will be).
+///Linux support will probably not come.
+///It is insanely hard and platform specific, because
+/// 1. we would need to write raw machinecode/shellcode to the target process.
+/// 3. which then has the necessary code to load the .so
+/// 4. we need to somehow redirect the target program's execution, to execute our code
+/// 5. we need to do that, without somehow disrupting ANY of the program's code
+/// 6. we need to return the EXACT state before we did anything, because the other program may need that
+///
+/// If this library is supposed to be helpful I'd want to not require to run it as root.
+/// Unfortunately some steps involve calling ptrace. Access to the command is restricted, if you are not the parent process of the process you are trying to trace.
+/// These requirements would mean, that we can only inject so files to processes, that the program this library itself created.
 
 ///This struct will expose certain module private functions, to actually use the api.
 #[derive(Debug, Clone)]

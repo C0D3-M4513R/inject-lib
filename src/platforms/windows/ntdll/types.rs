@@ -10,6 +10,7 @@ use winapi::um::winnt::{
     ULARGE_INTEGER, ULONGLONG,
 };
 //This is the prototype, of the NtReadVirtualMemory function
+#[cfg(target_pointer_width = "32")]
 pub(crate) type FnNtWOW64ReadVirtualMemory64 =
     unsafe extern "system" fn(HANDLE, PVOID64, PVOID, ULONGLONG, PULONGLONG) -> NTSTATUS;
 //This is the prototype, of the NtReadVirtualMemory function
