@@ -52,4 +52,4 @@ jobs:
           name: dll-inject-${{ matrix.target}}-${{matrix.profile}}
           path: |
             dll-inject/dll-inject.h
-            target/${{ matrix.target }}/${{matrix.profile}}/dll-inject.*
+            target/${{ matrix.target }}/${{matrix.profile}}/dll_inject.*
