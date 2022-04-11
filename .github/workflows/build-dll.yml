@@ -1,4 +1,4 @@
-name: Rust Tests
+name: Build dll
 
 on:
   push:
@@ -12,7 +12,7 @@ env:
 
 jobs:
   ci:
-    name: "build-ci"
+    name: "build-ci-dll"
     needs: ["build"]
     runs-on: ubuntu-latest
     steps:
@@ -23,22 +23,22 @@ jobs:
     runs-on: windows-latest
     strategy:
       matrix:
-        profile: [release,debug]
+        profile: [release,dev]
         target: [i686-pc-windows-msvc,x86_64-pc-windows-msvc]
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
-        working-directory: ./inject-lib
         with:
           toolchain: stable
           target: ${{ matrix.target }}
-          components: cbindgen
-
       - uses: actions-rs/cargo@v1
-        working-directory: ./dll-inject
+        with:
+          command: install
+          args: cbindgen
+      - uses: actions-rs/cargo@v1
         with:
           command: build
-          args: ${{ matrix.args }} --target ${{ matrix.target }} --profile ${{matrix.profile}}
+          args: ${{ matrix.args }} --target ${{ matrix.target }} --profile ${{matrix.profile}} --package dll-inject
       - name: generate bindings
         working-directory: ./dll-inject
         run: cbindgen --config cbindgen.toml --crate dll-inject --output dll-inject.h
@@ -48,11 +48,8 @@ jobs:
         run: rustc empty.rs --crate-type staticlib --print native-static-libs
 
       - uses: actions/upload-artifact@v3
-        working-directory: ./dll-inject
         with:
           name: dll-inject-${{ matrix.target}}-${{matrix.profile}}
           path: |
-            dll-inject.h
+            dll-inject/dll-inject.h
             target/${{ matrix.target }}/${{matrix.profile}}/dll-inject.*
-
-

@@ -28,20 +28,17 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
-        working-directory: ./inject-lib
         with:
           toolchain: stable
           target: ${{ matrix.target }}
       - uses: actions-rs/cargo@v1
-        working-directory: ./inject-lib
         with:
           command: build
-          args: ${{ matrix.args }} --target ${{ matrix.target }}
+          args: ${{ matrix.args }} --target ${{ matrix.target }} --package inject-lib
       - uses: actions-rs/cargo@v1
-        working-directory: ./inject-lib
         with:
           command: test
-          args: ${{ matrix.args }} --target ${{ matrix.target }}
+          args: ${{ matrix.args }} --target ${{ matrix.target }} --package inject-lib
   build-ubuntu:
     name: "build-ubuntu"
     runs-on: ubuntu-latest
@@ -52,19 +49,16 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
-        working-directory: ./inject-lib
         with:
           toolchain: ${{ matrix.toolchain }}
       - uses: actions-rs/cargo@v1
-        working-directory: ./inject-lib
         with:
           command: build
-          args: ${{ matrix.args }} --features ntdll
+          args: ${{ matrix.args }} --features ntdll --package inject-lib
       - uses: actions-rs/cargo@v1
-        working-directory: ./inject-lib
         with:
           command: test
-          args: ${{ matrix.args }} --features ntdll
+          args: ${{ matrix.args }} --features ntdll --package inject-lib
 
   build-beta:
     name: "build-beta"
@@ -77,17 +71,14 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
-        working-directory: ./inject-lib
         with:
           toolchain: beta
           target: ${{ matrix.target }}
       - uses: actions-rs/cargo@v1
-        working-directory: ./inject-lib
         with:
           command: build
-          args: ${{ matrix.args }} --all-features --target ${{ matrix.target }}
+          args: ${{ matrix.args }} --all-features --target ${{ matrix.target }} --package inject-lib
       - uses: actions-rs/cargo@v1
-        working-directory: ./inject-lib
         with:
           command: test
-          args: ${{ matrix.args }} --all-features --target ${{ matrix.target }}
+          args: ${{ matrix.args }} --all-features --target ${{ matrix.target }} --package inject-lib
