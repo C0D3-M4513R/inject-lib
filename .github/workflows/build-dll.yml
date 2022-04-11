@@ -1,0 +1,58 @@
+name: Rust Tests
+
+on:
+  push:
+    branches: [staging,trying,dev,main]
+    # Remove the line above to run when pushing to master
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    name: "build-ci"
+    needs: ["build"]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Done
+        run: exit 0
+  build:
+    name: "build"
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        profile: [release,debug]
+        target: [i686-pc-windows-msvc,x86_64-pc-windows-msvc]
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        working-directory: ./inject-lib
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          components: cbindgen
+
+      - uses: actions-rs/cargo@v1
+        working-directory: ./dll-inject
+        with:
+          command: build
+          args: ${{ matrix.args }} --target ${{ matrix.target }} --profile ${{matrix.profile}}
+      - name: generate bindings
+        working-directory: ./dll-inject
+        run: cbindgen --config cbindgen.toml --crate dll-inject --output dll-inject.h
+
+      - name: list dependencies
+        working-directory: ./dll-inject/src
+        run: rustc empty.rs --crate-type staticlib --print native-static-libs
+
+      - uses: actions/upload-artifact@v3
+        working-directory: ./dll-inject
+        with:
+          name: dll-inject-${{ matrix.target}}-${{matrix.profile}}
+          path: |
+            dll-inject.h
+            target/${{ matrix.target }}/${{matrix.profile}}/dll-inject.*
+
+

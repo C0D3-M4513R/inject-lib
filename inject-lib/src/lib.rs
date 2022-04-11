@@ -22,10 +22,14 @@
 //! If this library is supposed to be helpful I'd want to not require to run it as root.
 //! Unfortunately some steps involve calling ptrace. Access to the command is restricted, if you are not the parent process of the process you are trying to trace.
 //! These requirements would mean, that we can only inject so files to processes, that the program this library itself created.
+// #![feature(strict_provenance)]
+// #![warn(lossy_provenance_casts)]
 #![warn(missing_docs)]
 
-#[derive(Debug, Clone)]
 ///This struct will expose certain module private functions, to actually use the api.
+///The exact contents should be considered implementation detail.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Injector<'a> {
     ///The path to a dll. This may be in any format, that rust understands
     pub dll: &'a str,

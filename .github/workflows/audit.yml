@@ -17,5 +17,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
       - uses: actions-rs/audit-check@v1
+        working-directory: ./inject-lib
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

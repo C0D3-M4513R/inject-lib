@@ -42,11 +42,13 @@ jobs:
         steps:
             - uses: actions/checkout@v3
             - uses: actions-rs/toolchain@v1
+              working-directory: ./inject-lib
               with:
                   toolchain: stable
                   components: rustfmt
                   override: true
             - uses: actions-rs/cargo@v1
+              working-directory: ./inject-lib
               with:
                   command: fmt
                   args: --check --verbose --manifest-path Cargo.toml -- --config-path rustfmt.toml
@@ -74,6 +76,7 @@ jobs:
             ################################
             -   name: Lint Code Base
                 uses: github/super-linter@v4
+                working-directory: ./inject-lib
                 env:
                     VALIDATE_ALL_CODEBASE: true
                     VALIDATE_RUST_2015: false
