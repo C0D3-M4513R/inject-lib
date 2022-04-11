@@ -1,14 +1,17 @@
+#include <string.h>
 #include <stdio.h>
-#include "my_header.h"//Get this header from the build artifacts
+#include "dll-inject.h"//Get this header from the build artifacts
 
 int main(){
-    char vulkan[16]="rust-vulkan.exe\0";
-    FindPid r=find_pid(vulkan);
-    printf("Exitcode of findpid=%i\n",r.exitcode);
+    char vulkan[16]=u8"rust-vulkan.exe";
+    FindPid r=find_pid(vulkan, strlen(vulkan));
+    printf("Exitcode of findpid=%i arr=%p len=%zu\n",r.exitcode,r.arr,r.len);
     if (r.len >=0 && r.exitcode==0) {
         uint32_t pid=r.arr[0];
-        int16_t i = inject(pid,"rust_dll.dll");
+        char dll[14]=u8"rust_dll.dll";
+        int16_t i = inject(pid, dll, strlen(dll));
         printf("Exitcode of inject=%i\n",i);
+        free(r.arr);
     }
-
+    return 0;
 }
