@@ -24,7 +24,7 @@ jobs:
     strategy:
       matrix:
         profile: [release,dev]
-        target: [i686-pc-windows-msvc,x86_64-pc-windows-msvc]
+        target: [i686-pc-windows-msvc, i686-pc-windows-gnu ,x86_64-pc-windows-msvc, x86_64-pc-windows-gnu]
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
