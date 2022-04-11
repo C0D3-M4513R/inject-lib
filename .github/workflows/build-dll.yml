@@ -48,8 +48,17 @@ jobs:
         run: rustc empty.rs --crate-type staticlib --print native-static-libs
 
       - uses: actions/upload-artifact@v3
+        if: ${{matrix.profile}} == release
         with:
           name: dll-inject-${{ matrix.target}}-${{matrix.profile}}
           path: |
             dll-inject/dll-inject.h
             target/${{ matrix.target }}/${{matrix.profile}}/dll_inject.*
+
+      - uses: actions/upload-artifact@v3
+        if: ${{matrix.profile}} == dev
+        with:
+          name: dll-inject-${{ matrix.target}}-${{matrix.profile}}
+          path: |
+            dll-inject/dll-inject.h
+            target/${{ matrix.target }}/debug/dll_inject.*
