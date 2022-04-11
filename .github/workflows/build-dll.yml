@@ -13,17 +13,15 @@ env:
 jobs:
   ci:
     name: "build-ci-dll"
-    needs: ["build"]
+    needs: ["build-release","build-dev"]
     runs-on: ubuntu-latest
     steps:
       - name: Done
         run: exit 0
-  build:
-    name: "build"
+  build-release:
     runs-on: windows-latest
     strategy:
       matrix:
-        profile: [release,dev]
         target: [i686-pc-windows-msvc, i686-pc-windows-gnu ,x86_64-pc-windows-msvc, x86_64-pc-windows-gnu]
     steps:
       - uses: actions/checkout@v3
@@ -38,7 +36,7 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: build
-          args: ${{ matrix.args }} --target ${{ matrix.target }} --profile ${{matrix.profile}} --package dll-inject
+          args: --target ${{ matrix.target }} --profile release --package dll-inject
       - name: generate bindings
         working-directory: ./dll-inject
         run: cbindgen --config cbindgen.toml --crate dll-inject --output dll-inject.h
@@ -48,17 +46,44 @@ jobs:
         run: rustc empty.rs --crate-type staticlib --print native-static-libs
 
       - uses: actions/upload-artifact@v3
-        if: ${{matrix.profile}} == release
         with:
-          name: dll-inject-${{ matrix.target}}-${{matrix.profile}}
+          name: dll-inject-${{ matrix.target}}-release
           path: |
             dll-inject/dll-inject.h
-            target/${{ matrix.target }}/${{matrix.profile}}/dll_inject.*
+            target/${{ matrix.target }}/release/libdll_inject.*
+            target/${{ matrix.target }}/release/dll_inject.*
+
+  build-dev:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        target: [i686-pc-windows-msvc, i686-pc-windows-gnu ,x86_64-pc-windows-msvc, x86_64-pc-windows-gnu]
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+      - uses: actions-rs/cargo@v1
+        with:
+          command: install
+          args: cbindgen
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: ${{ matrix.args }} --target ${{ matrix.target }} --profile dev --package dll-inject
+      - name: generate bindings
+        working-directory: ./dll-inject
+        run: cbindgen --config cbindgen.toml --crate dll-inject --output dll-inject.h
+
+      - name: list dependencies
+        working-directory: ./dll-inject/src
+        run: rustc empty.rs --crate-type staticlib --print native-static-libs
 
       - uses: actions/upload-artifact@v3
-        if: ${{matrix.profile}} == dev
         with:
-          name: dll-inject-${{ matrix.target}}-${{matrix.profile}}
+          name: dll-inject-${{ matrix.target}}-dev
           path: |
             dll-inject/dll-inject.h
             target/${{ matrix.target }}/debug/dll_inject.*
+            target/${{ matrix.target }}/debug/libdll_inject.*
