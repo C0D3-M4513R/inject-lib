@@ -25,7 +25,7 @@ fn read(ptr:*mut u8,len:usize)->Vec<u8>{
 #[no_mangle]
 ///Takes a utf8 string pointer, along with the size, the pointer is valid
 ///A return code of 0 means success.
-pub extern "C" fn inject(pid:u32,dll:*mut u8,len:usize)->i16{
+pub extern "C" fn inject(pid:u32,dll:*mut u8,len:usize,wait:bool)->i16{
 	let v = read(dll,len);
 	let dll=String::from_utf8(v);
 	if dll.is_err(){
@@ -34,7 +34,7 @@ pub extern "C" fn inject(pid:u32,dll:*mut u8,len:usize)->i16{
 	}
 	let dll=unsafe{dll.unwrap_unchecked()};//Safety: checked and handled above;
 	let i = Injector::new(dll.as_str(),pid);
-	let r =i.inject();
+	let r =i.inject(wait).inject();
 	if let Err(e)=r{
 		eprintln!("inject-lib: ERROR: {}",e);
 		return -1;
@@ -45,7 +45,7 @@ pub extern "C" fn inject(pid:u32,dll:*mut u8,len:usize)->i16{
 #[no_mangle]
 ///Takes a utf8 string pointer, along with the size, the pointer is valid
 ///A return code of 0 means success.
-pub extern "C" fn eject(pid:u32,dll:*mut u8,len:usize)->i16{
+pub extern "C" fn eject(pid:u32,dll:*mut u8,len:usize,wait:bool)->i16{
 	let v = read(dll,len);
 	let dll=String::from_utf8(v);
 	if dll.is_err(){
@@ -54,7 +54,7 @@ pub extern "C" fn eject(pid:u32,dll:*mut u8,len:usize)->i16{
 	}
 	let dll=unsafe{dll.unwrap_unchecked()};//Safety: checked and handled above;
 	let i = Injector::new(dll.as_str(),pid);
-	let r =i.eject();
+	let r =i.inject(wait).eject();
 	if let Err(e)=r{
 		eprintln!("inject-lib: ERROR: {}",e);
 		return -1;
@@ -85,7 +85,7 @@ pub extern "C" fn find_pid(name:*mut u8,len:usize)-> FindPid {
 		};
 	}
 	let name=unsafe{ name.unwrap_unchecked()};//Safety: checked and handled above;
-	let vec=Injector::find_pid(name.as_str());
+	let vec=Injector::default().inject(false).find_pid(name.as_str());
 	if let Ok(vec)=vec{
 		let v=vec.leak();
 		eprintln!("{:x?}",v.as_mut_ptr());

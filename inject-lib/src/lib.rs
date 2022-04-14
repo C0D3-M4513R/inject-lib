@@ -31,6 +31,7 @@
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Injector<'a> {
+
     ///The path to a dll. This may be in any format, that rust understands
     pub dll: &'a str,
     ///The pid the dll should be injected into
@@ -39,11 +40,16 @@ pub struct Injector<'a> {
 
 pub(crate) type Result<T> = std::result::Result<T, error::Error>;
 pub(crate) use log::{debug, error, info, trace, warn};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 ///Holds all error types
 pub mod error;
 mod platforms;
+pub trait Inject{
+    fn inject(&self)->Result<()>;
+    fn eject(&self)->Result<()>;
+    fn find_pid<P: AsRef<Path>>(name: P) -> Result<Vec<u32>>;
+}
 
 impl<'a> Injector<'a> {
     ///Create a new Injector object.
@@ -57,6 +63,16 @@ impl<'a> Injector<'a> {
     ///Sets the pid
     pub fn set_pid(&mut self, pid: u32) {
         self.pid = pid;
+    }
+    #[cfg(target_family="windows")]
+    ///Gets the Platform specific Injector.
+    ///Currently only windows is supported.
+    ///wait indicates, if we should wait on the dll to attach to the process
+    pub fn inject(&self,wait:bool)->impl Inject + '_{
+        platforms::windows::InjectWin{
+            inj:self,
+            wait,
+        }
     }
 }
 
