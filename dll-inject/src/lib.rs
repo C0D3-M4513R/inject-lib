@@ -5,6 +5,7 @@ use std::ops::Add;
 use std::os::raw::c_char;
 use std::ptr::null_mut;
 use inject_lib::Injector;
+use inject_lib::Inject;
 use inject_lib::error::Error;
 
 #[repr(C)]
@@ -85,7 +86,7 @@ pub extern "C" fn find_pid(name:*mut u8,len:usize)-> FindPid {
 		};
 	}
 	let name=unsafe{ name.unwrap_unchecked()};//Safety: checked and handled above;
-	let vec=Injector::default().inject(false).find_pid(name.as_str());
+	let vec=inject_lib::InjectWin::find_pid(name.as_str());
 	if let Ok(vec)=vec{
 		let v=vec.leak();
 		eprintln!("{:x?}",v.as_mut_ptr());

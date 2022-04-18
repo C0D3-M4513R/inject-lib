@@ -601,7 +601,7 @@ pub mod test {
     use winapi::um::winbase::CREATE_NEW_CONSOLE;
     use winapi::um::winnt::PROCESS_ALL_ACCESS;
     use crate::platforms::windows::InjectWin;
-    
+
     thread_local! {
         pub(in super) static FNS_M:FNS=FNS::default();
     }
@@ -618,7 +618,8 @@ pub mod test {
             }
         }
     }
-
+    ///This will create a new cmd process.
+    ///You MUST bind the Process to something else than _ (even _a is apparently fine?).
     pub fn create_cmd() -> (Child, super::process::Process) {
         let c = std::process::Command::new("cmd.exe")
             .creation_flags(CREATE_NEW_CONSOLE)
@@ -633,6 +634,15 @@ pub mod test {
             )
         };
         (c, proc)
+    }
+
+    #[test]
+    ///Tests, that create_cmd does not panic, and that the drop will work.
+    ///The decompiler tells some interesting stuff. I would rather have it tested here.
+    fn test_create_cmd(){
+        let (mut c, _a) = create_cmd();
+        //todo: Why do I need to bind process to _a. Why can I not use _?
+        c.kill().unwrap();
     }
 
     #[test]

@@ -44,6 +44,8 @@ use std::path::{Path, PathBuf};
 
 ///Holds all error types
 pub mod error;
+#[cfg(target_family = "windows")]
+pub use platforms::windows::InjectWin;
 mod platforms;
 pub trait Inject{
     fn inject(&self)->Result<()>;
@@ -164,3 +166,15 @@ mod test {
         assert_eq!(inj.pid, PID, "Setter did not correctly set the PID");
     }
 }
+///This macro exists, to get the maximum of two values in a const context.
+///The compiler complains about not being able to call a destructor in a const context in a regular const max fn.
+macro_rules! max {
+    ($t1:expr,$t2:expr) => {
+        if $t1>$t1 {
+            $t1
+        }else{
+            $t2
+        }
+    };
+}
+pub(crate) use max;
