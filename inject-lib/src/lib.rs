@@ -43,12 +43,15 @@ use std::path::{Path, PathBuf};
 
 ///Holds all error types
 pub mod error;
-#[cfg(target_family = "windows")]
-pub use platforms::windows::InjectWin;
 mod platforms;
+///This represents the actions, that are supported with a dll.
 pub trait Inject {
+    ///Injects a dll
     fn inject(&self) -> Result<()>;
+    ///Ejects a dll
     fn eject(&self) -> Result<()>;
+    ///This Function will find all currently processes, with a given name.
+    ///Even if no processes are found, an empty Vector should return.
     fn find_pid<P: AsRef<Path>>(name: P) -> Result<Vec<u32>>;
 }
 
@@ -71,6 +74,12 @@ impl<'a> Injector<'a> {
     ///wait indicates, if we should wait on the dll to attach to the process
     pub fn inject(&self, wait: bool) -> impl Inject + '_ {
         platforms::windows::InjectWin { inj: self, wait }
+    }
+    #[cfg(target_family = "windows")]
+    ///This Function will find all currently processes, with a given name.
+    ///Even if no processes are found, an empty Vector should return.
+    pub fn find_pid<P: AsRef<Path>>(name: P) -> Result<Vec<u32>>{
+        platforms::windows::InjectWin::find_pid(name)
     }
 }
 
