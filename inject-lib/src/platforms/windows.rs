@@ -601,6 +601,7 @@ pub mod test {
     use winapi::um::tlhelp32::MODULEENTRY32W;
     use winapi::um::winbase::CREATE_NEW_CONSOLE;
     use winapi::um::winnt::PROCESS_ALL_ACCESS;
+    use crate::error::Error;
 
     thread_local! {
         pub(in super) static FNS_M:FNS=FNS::default();
@@ -797,7 +798,10 @@ pub mod test {
         //other test
         {
             let r = super::get_module("ntdll.dll", &cp);
+            #[cfg(target_pointer_width = "64")]
             assert!(r.is_ok(), "normal other get_module err:{}", r.unwrap_err());
+            #[cfg(target_pointer_width = "32")]
+            assert_eq!(r.unwrap_err(),Error::Unsupported(Some("No Ntdll support enabled. Cannot get module. Target process is x64, but we are compiled as x86.".to_string())));
         }
         #[cfg(feature = "ntdll")]
         {
