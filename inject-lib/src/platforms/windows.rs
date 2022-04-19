@@ -1,7 +1,7 @@
 #![cfg(windows)]
 mod macros;
 
-use crate::{strip_path, Injector, Result, Inject};
+use crate::{strip_path, Inject, Injector, Result};
 use macros::check_ptr;
 use std::ffi::OsString;
 
@@ -51,12 +51,12 @@ pub fn str_from_wide_str(v: &[u16]) -> Result<String> {
     })
 }
 
-pub struct InjectWin<'a>{
-    pub inj:&'a Injector<'a>,
-    pub wait:bool,
+pub struct InjectWin<'a> {
+    pub inj: &'a Injector<'a>,
+    pub wait: bool,
 }
 
-impl<'a> Inject for InjectWin<'a>{
+impl<'a> Inject for InjectWin<'a> {
     ///Inject a DLL into another process
     ///Notice:This implementation blocks, and waits, until the library is injected, or the injection failed.
     fn inject(&self) -> Result<()> {
@@ -249,11 +249,11 @@ impl<'a> InjectWin<'a> {
             //This method is intended to be only used, when we are compiled as x86, and are injecting to x64.
             let ntdll = self_is_under_wow && !pid_is_under_wow;
             #[cfg(test)]
-                //Lock this thread for the minimal amount of time possible
-                let ntdll = { test::FNS_M.with(|x| x.exec_fn_in_proc.get()) || ntdll };
+            //Lock this thread for the minimal amount of time possible
+            let ntdll = { test::FNS_M.with(|x| x.exec_fn_in_proc.get()) || ntdll };
             if ntdll {
                 #[cfg(target_arch = "x86")]
-                    let (r, t, _c) = {
+                let (r, t, _c) = {
                     let ntdll = ntdll::NTDLL::new()?;
                     let (path, base) = ntdll.get_ntdll_base_addr(pid_is_under_wow, &proc)?;
                     let rva = get_dll_export("RtlCreateUserThread", path)?;
@@ -273,7 +273,7 @@ impl<'a> InjectWin<'a> {
                     }
                 };
                 #[cfg(not(target_arch = "x64"))]
-                    let (r, t, _c) = {
+                let (r, t, _c) = {
                     let mut c = CLIENT_ID64 {
                         UniqueProcess: 0,
                         UniqueThread: 0,
@@ -304,9 +304,9 @@ impl<'a> InjectWin<'a> {
                     }
                     _ => {}
                 }
-                return if self.wait{
+                return if self.wait {
                     unsafe { Thread::new(t)? }.wait_for_thread()
-                }else{
+                } else {
                     Ok(())
                 };
             }
@@ -328,9 +328,9 @@ impl<'a> InjectWin<'a> {
             trace!("Thread is {:?} and thread id is {}", *thread, thread_id);
             info!("Waiting for DLL");
             // std::thread::sleep(Duration::new(0,500));//todo: why is this necessary, (only) when doing cargo run?
-            return if self.wait{
+            return if self.wait {
                 thread.wait_for_thread()
-            }else{
+            } else {
                 Ok(())
             };
         }
@@ -347,8 +347,8 @@ impl<'a> InjectWin<'a> {
 
     ///Find a PID, where the process-name matches some user defined selector
     fn find_pid_selector<F>(select: F) -> Result<Vec<u32>>
-        where
-            F: Fn(&PROCESSENTRY32W) -> bool,
+    where
+        F: Fn(&PROCESSENTRY32W) -> bool,
     {
         let mut pids: Vec<DWORD> = Vec::new();
         let snap_handle = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
@@ -585,6 +585,7 @@ fn get_dll_export(name: &str, path: String) -> Result<u32> {
 
 #[cfg(test)]
 pub mod test {
+    use crate::platforms::windows::InjectWin;
     use crate::{Inject, Injector, Result};
     use std::cell::Cell;
     use std::ffi::OsString;
@@ -600,7 +601,6 @@ pub mod test {
     use winapi::um::tlhelp32::MODULEENTRY32W;
     use winapi::um::winbase::CREATE_NEW_CONSOLE;
     use winapi::um::winnt::PROCESS_ALL_ACCESS;
-    use crate::platforms::windows::InjectWin;
 
     thread_local! {
         pub(in super) static FNS_M:FNS=FNS::default();
@@ -621,11 +621,14 @@ pub mod test {
     ///This will create a new cmd process.
     ///You MUST bind the Process to something else than _ (even _a is apparently fine?).
     pub fn create_cmd() -> (Child, super::process::Process) {
-        let c = std::process::Command::new("cmd.exe")
-            .creation_flags(CREATE_NEW_CONSOLE)
-            .spawn()
-            .unwrap();
-        sleep(Duration::from_millis(50)); //Let the process init.
+        let c = std::process::Command::new(format!(
+            "{}\\Sysnative\\cmd.exe",
+            super::get_windir().unwrap()
+        ))
+        .creation_flags(CREATE_NEW_CONSOLE)
+        .spawn()
+        .unwrap();
+        sleep(Duration::from_millis(100)); //Let the process init.
         let proc = unsafe {
             super::process::Process::from_raw_parts(
                 c.as_raw_handle() as usize,
@@ -639,7 +642,7 @@ pub mod test {
     #[test]
     ///Tests, that create_cmd does not panic, and that the drop will work.
     ///The decompiler tells some interesting stuff. I would rather have it tested here.
-    fn test_create_cmd(){
+    fn test_create_cmd() {
         let (mut c, _a) = create_cmd();
         //todo: Why do I need to bind process to _a. Why can I not use _?
         c.kill().unwrap();
