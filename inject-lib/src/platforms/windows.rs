@@ -621,10 +621,15 @@ pub mod test {
     ///This will create a new cmd process.
     ///You MUST bind the Process to something else than _ (even _a is apparently fine?).
     pub fn create_cmd() -> (Child, super::process::Process) {
-        let c = std::process::Command::new(format!(
+        #[cfg(not(target_pointer_width = "32"))]
+        let path = "cmd.exe";
+        #[cfg(target_pointer_width = "32")]
+        let path = format!(
             "{}\\Sysnative\\cmd.exe",
             super::get_windir().unwrap()
-        ))
+        );
+
+        let c = std::process::Command::new(path)
         .creation_flags(CREATE_NEW_CONSOLE)
         .spawn()
         .unwrap();
