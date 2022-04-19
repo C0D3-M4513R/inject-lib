@@ -585,6 +585,7 @@ fn get_dll_export(name: &str, path: String) -> Result<u32> {
 
 #[cfg(test)]
 pub mod test {
+    use crate::error::Error;
     use crate::platforms::windows::InjectWin;
     use crate::{Inject, Injector, Result};
     use std::cell::Cell;
@@ -601,7 +602,6 @@ pub mod test {
     use winapi::um::tlhelp32::MODULEENTRY32W;
     use winapi::um::winbase::CREATE_NEW_CONSOLE;
     use winapi::um::winnt::PROCESS_ALL_ACCESS;
-    use crate::error::Error;
 
     thread_local! {
         pub(in super) static FNS_M:FNS=FNS::default();
@@ -625,15 +625,12 @@ pub mod test {
         #[cfg(not(target_pointer_width = "32"))]
         let path = "cmd.exe";
         #[cfg(target_pointer_width = "32")]
-        let path = format!(
-            "{}\\Sysnative\\cmd.exe",
-            super::get_windir().unwrap()
-        );
+        let path = format!("{}\\Sysnative\\cmd.exe", super::get_windir().unwrap());
 
         let c = std::process::Command::new(path)
-        .creation_flags(CREATE_NEW_CONSOLE)
-        .spawn()
-        .unwrap();
+            .creation_flags(CREATE_NEW_CONSOLE)
+            .spawn()
+            .unwrap();
         sleep(Duration::from_millis(100)); //Let the process init.
         let proc = unsafe {
             super::process::Process::from_raw_parts(
