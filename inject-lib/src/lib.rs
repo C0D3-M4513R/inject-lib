@@ -31,7 +31,6 @@
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Injector<'a> {
-
     ///The path to a dll. This may be in any format, that rust understands
     pub dll: &'a str,
     ///The pid the dll should be injected into
@@ -47,9 +46,9 @@ pub mod error;
 #[cfg(target_family = "windows")]
 pub use platforms::windows::InjectWin;
 mod platforms;
-pub trait Inject{
-    fn inject(&self)->Result<()>;
-    fn eject(&self)->Result<()>;
+pub trait Inject {
+    fn inject(&self) -> Result<()>;
+    fn eject(&self) -> Result<()>;
     fn find_pid<P: AsRef<Path>>(name: P) -> Result<Vec<u32>>;
 }
 
@@ -66,15 +65,12 @@ impl<'a> Injector<'a> {
     pub fn set_pid(&mut self, pid: u32) {
         self.pid = pid;
     }
-    #[cfg(target_family="windows")]
+    #[cfg(target_family = "windows")]
     ///Gets the Platform specific Injector.
     ///Currently only windows is supported.
     ///wait indicates, if we should wait on the dll to attach to the process
-    pub fn inject(&self,wait:bool)->impl Inject + '_{
-        platforms::windows::InjectWin{
-            inj:self,
-            wait,
-        }
+    pub fn inject(&self, wait: bool) -> impl Inject + '_ {
+        platforms::windows::InjectWin { inj: self, wait }
     }
 }
 
@@ -166,15 +162,3 @@ mod test {
         assert_eq!(inj.pid, PID, "Setter did not correctly set the PID");
     }
 }
-///This macro exists, to get the maximum of two values in a const context.
-///The compiler complains about not being able to call a destructor in a const context in a regular const max fn.
-macro_rules! max {
-    ($t1:expr,$t2:expr) => {
-        if $t1>$t1 {
-            $t1
-        }else{
-            $t2
-        }
-    };
-}
-pub(crate) use max;
