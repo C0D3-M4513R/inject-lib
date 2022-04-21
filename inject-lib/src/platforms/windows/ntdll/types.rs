@@ -8,9 +8,12 @@ use winapi::shared::basetsd::ULONG64;
 use winapi::shared::minwindef::PULONG;
 use winapi::shared::ntdef::{BOOLEAN, CHAR, NTSTATUS, UCHAR, ULONG, UNICODE_STRING64, USHORT};
 use winapi::um::winnt::{
-    FLS_MAXIMUM_AVAILABLE, HANDLE, LARGE_INTEGER, LIST_ENTRY64, PULONGLONG, PVOID, PVOID64,
+    FLS_MAXIMUM_AVAILABLE, HANDLE, LARGE_INTEGER, LIST_ENTRY64, PVOID, PVOID64,
     ULARGE_INTEGER, ULONGLONG,
 };
+#[cfg(target_pointer_width = "32")]
+use winapi::um::winnt::PULONGLONG;
+
 //This is the prototype, of the NtReadVirtualMemory function
 #[cfg(target_pointer_width = "32")]
 pub(crate) type FnNtWOW64ReadVirtualMemory64 =

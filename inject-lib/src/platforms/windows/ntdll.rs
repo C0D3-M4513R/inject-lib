@@ -4,14 +4,11 @@ mod types; //These are exclusively ntdll types
 use super::macros::{check_ptr, err};
 use super::process::Process;
 use super::{get_windir, predicate, str_from_wide_str};
-use crate::error::Error;
 use crate::Result;
-use ntapi::ntpsapi::PROCESS_BASIC_INFORMATION;
 use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
 use once_cell::sync::OnceCell;
-use pelite::{Pod, Wrap};
-use std::ffi::{c_void, OsStr};
-use std::marker::PhantomData;
+use pelite::Wrap;
+use std::ffi::OsStr;
 use std::mem::MaybeUninit;
 use std::ops::Shl;
 use std::os::windows::ffi::OsStrExt;
@@ -100,7 +97,7 @@ impl NTDLL {
         //This gets the PEB address, from the PBI
         let peb_addr: u64 = {
             if pid_under_wow {
-                let pbi: PROCESS_BASIC_INFORMATION =
+                let pbi: ntapi::ntpsapi::PROCESS_BASIC_INFORMATION =
                     self.query_process_information(proc, ntapi::ntpsapi::ProcessBasicInformation)?;
                 pbi.PebBaseAddress as u64
             } else {
@@ -134,9 +131,7 @@ impl NTDLL {
                 peb.Ldr as u64
             };
             if ldr_addr == 0 {
-                return Err(crate::error::Error::Unsuccessful(Some(
-                    "LDR is not initialised?".to_string(),
-                )));
+                return Err(crate::error::CustomError::LDRUninit)?;
             }
             crate::debug!("Ldr Address is {:x}.", ldr_addr);
         }
@@ -194,9 +189,9 @@ impl NTDLL {
                     }
                 };
                 if modlist_addr == first_modlist_addr {
-                    const RECURSION:&str = "We looped through the whole InLoadOrderModuleList, but still have no match. Aborting, because this would end in an endless loop.";
-                    crate::warn!("{}", RECURSION);
-                    return Err(Error::Unsuccessful(Some(RECURSION.to_string())));
+                    let s = crate::error::CustomError::ModuleListLoop;
+                    crate::warn!("{}",s);
+                    return Err(s)?;
                 }
 
                 let dll_path_buf = self.read_virtual_mem_fn(
@@ -424,9 +419,7 @@ impl NTDLL {
         }
         assert!(i<= size as u32, "Detected buffer overflow. Stopping here, due to unknown or possibly malicious side-effects.");
         if i == 0 && size != 0 {
-            return Err(crate::error::Error::Unsuccessful(Some(
-                "Zero bytes read, but the requested type is not Zero sized.".to_string(),
-            )));
+            return Err(crate::error::CustomError::ZeroBytes)?;
         }
         //Truncate vec, to only use initialized memory.
         // buf.set_len(i as usize);
@@ -471,7 +464,7 @@ struct FnNtdllWOW<'a, 'b, 'c> {
     #[cfg(target_pointer_width = "32")]
     wow64name: &'b [u8],
     #[cfg(target_pointer_width = "64")]
-    _phantom: PhantomData<&'b [u8]>,
+    _phantom: std::marker::PhantomData<&'b [u8]>,
     name: &'a [u8],
     #[cfg(target_pointer_width = "32")]
     wowfn: OnceCell<usize>,
@@ -479,13 +472,13 @@ struct FnNtdllWOW<'a, 'b, 'c> {
 }
 impl<'a, 'b, 'c> FnNtdllWOW<'a, 'b, 'c> {
     ///Constructs D
-    pub(self) fn new(name: &'a [u8], wow64name: &'b [u8]) -> Result<Self> {
+    pub(self) fn new(name: &'a [u8], #[cfg_attr(target_pointer_width = "64",allow(unused))]wow64name: &'b [u8]) -> Result<Self> {
         Ok(FnNtdllWOW {
             ntdll: NTDLL::new()?,
             #[cfg(target_pointer_width = "32")]
             wow64name,
             #[cfg(target_pointer_width = "64")]
-            _phantom: PhantomData::default(),
+            _phantom: std::marker::PhantomData::default(),
             name,
             #[cfg(target_pointer_width = "32")]
             wowfn: OnceCell::new(),
@@ -541,7 +534,6 @@ pub mod test {
     use super::NTDLL;
     use crate::platforms::windows::ntdll::types;
     use crate::Result;
-    use ntapi::ntpsapi::PROCESS_BASIC_INFORMATION;
     use winapi::um::winnt::PROCESS_ALL_ACCESS;
 
     #[test]
@@ -585,14 +577,13 @@ pub mod test {
     }
     #[test]
     fn no_find_get_module_in_proc() -> Result<()> {
-        const RECURSION:&str = "We looped through the whole InLoadOrderModuleList, but still have no match. Aborting, because this would end in an endless loop.";
         let proc = super::super::process::Process::new(std::process::id(), PROCESS_ALL_ACCESS)?;
         let ntdll = NTDLL::new()?;
         let x = unsafe { ntdll.get_module_in_proc(&proc, |_, _| None::<()>) };
         assert!(x.is_err(),"get_module_in_proc found something, eventhough it shouldn't have. We asked for NOTHING.");
         assert_eq!(
             x.unwrap_err(),
-            crate::error::Error::Unsuccessful(Some(RECURSION.to_string()))
+            crate::error::Error::InjectLib(crate::error::CustomError::ModuleListLoop)
         );
         Ok(())
     }

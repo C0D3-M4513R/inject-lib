@@ -6,11 +6,7 @@ use macros::check_ptr;
 use std::ffi::OsString;
 
 use log::{debug, error, info, trace, warn};
-#[cfg(feature = "ntdll")]
-use ntapi::ntapi_base::CLIENT_ID64;
-#[cfg(feature = "ntdll")]
-use ntapi::ntrtl::RtlCreateUserThread;
-use pelite::{Pod, Wrap};
+use pelite::Pod;
 use std::mem::size_of;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
@@ -24,7 +20,7 @@ use winapi::um::tlhelp32::{
     TH32CS_SNAPMODULE32, TH32CS_SNAPPROCESS,
 };
 use winapi::um::winnt::{
-    PROCESS_ALL_ACCESS, PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION,
+    PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION,
     PROCESS_VM_READ, PROCESS_VM_WRITE,
 };
 
@@ -36,12 +32,10 @@ mod thread;
 
 #[cfg(feature = "ntdll")]
 use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
-use winapi::shared::ntdef::PHANDLE;
 
 use crate::error::Error;
 use mem::MemPage;
 use process::Process;
-use thread::Thread;
 
 ///This function builds a String, from a WTF-encoded buffer.
 pub fn str_from_wide_str(v: &[u16]) -> Result<String> {
@@ -272,15 +266,15 @@ impl<'a> InjectWin<'a> {
                         )?
                     }
                 };
-                #[cfg(not(target_arch = "x64"))]
+                #[cfg(not(target_arch = "x86"))]
                 let (r, t, _c) = {
-                    let mut c = CLIENT_ID64 {
+                    let mut c = ntapi::ntapi_base::CLIENT_ID64 {
                         UniqueProcess: 0,
                         UniqueThread: 0,
                     };
                     let mut t = std::ptr::null_mut();
                     let r = unsafe {
-                        RtlCreateUserThread(
+                        ntapi::ntrtl::RtlCreateUserThread(
                             proc.get_proc(),
                             std::ptr::null_mut(),
                             0,
@@ -289,8 +283,8 @@ impl<'a> InjectWin<'a> {
                             0,
                             std::mem::transmute(entry_point as usize),
                             mem.get_address(),
-                            &mut t as PHANDLE,
-                            std::mem::transmute(&mut c as *mut CLIENT_ID64),
+                            &mut t as winapi::shared::ntdef::PHANDLE,
+                            core::mem::transmute(&mut c as ntapi::ntapi_base::PCLIENT_ID64),
                         )
                     };
                     (r, t, c)
@@ -305,7 +299,7 @@ impl<'a> InjectWin<'a> {
                     _ => {}
                 }
                 return if self.wait {
-                    unsafe { Thread::new(t)? }.wait_for_thread()
+                    unsafe { thread::Thread::new(t)? }.wait_for_thread()
                 } else {
                     Ok(())
                 };
@@ -334,9 +328,8 @@ impl<'a> InjectWin<'a> {
                 Ok(())
             };
         }
-        return Err(Error::Unsuccessful(Some(
-            "No viable injection method.".to_string(),
-        )));
+        //The ? should automatically convert this to the correct Error type.
+        Err(crate::error::CustomError::NoViableInjector)?
         //Check, if the dll is actually loaded?
         //todo: can we skip this? is the dll always guaranteed to be loaded here, or is it up to the dll, to decide that?
         //todo: re-add a check, for loaded modules
@@ -393,7 +386,6 @@ impl<'a> InjectWin<'a> {
     ///The Return value will be Ok(true), if the dll is x64(64bit), and Ok(false), if the dll is x86(32bit).
     fn get_is_dll_x64(&self) -> Result<bool> {
         let dll = std::fs::read(self.inj.dll)?;
-        // let parsed = result!(Wrap::<Pelite::pe32::PeFile,Pelite::pe64::PeFile>::from_bytes(dll.as_slice()));
         return match pelite::pe64::PeFile::from_bytes(dll.as_slice()) {
             Ok(_) => Ok(true),
             Err(pelite::Error::PeMagic) => pelite::pe32::PeFile::from_bytes(dll.as_slice())
@@ -546,9 +538,9 @@ fn get_module<P: AsRef<Path>>(name: P, proc: &Process) -> Result<(String, u64)> 
             return ntdll::NTDLL::new()?.get_module_in_proc(
                 proc,
                 predicate(
-                    |w: Wrap<LDR_DATA_TABLE_ENTRY32, ntdll::LDR_DATA_TABLE_ENTRY64>| match w {
-                        Wrap::T32(w) => w.DllBase as u64,
-                        Wrap::T64(w) => w.DllBase as u64,
+                    |w: pelite::Wrap<LDR_DATA_TABLE_ENTRY32, ntdll::LDR_DATA_TABLE_ENTRY64>| match w {
+                        pelite::Wrap::T32(w) => w.DllBase as u64,
+                        pelite::Wrap::T64(w) => w.DllBase as u64,
                     },
                     |x| (&cmp)(&x),
                 ),
@@ -587,10 +579,9 @@ fn get_dll_export(name: &str, path: String) -> Result<u32> {
 pub mod test {
     use crate::error::Error;
     use crate::platforms::windows::InjectWin;
-    use crate::{Inject, Injector, Result};
+    use crate::{Inject, Result};
     use std::cell::Cell;
     use std::ffi::OsString;
-    use std::io::Read;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::AsRawHandle;
     use std::os::windows::process::CommandExt;
@@ -609,12 +600,14 @@ pub mod test {
     #[derive(Debug)]
     pub(super) struct FNS {
         pub get_module: Cell<bool>,
+        #[cfg(feature = "ntdll")]
         pub exec_fn_in_proc: Cell<bool>,
     }
     impl Default for FNS {
         fn default() -> Self {
             FNS {
                 get_module: Cell::new(false),
+                #[cfg(feature = "ntdll")]
                 exec_fn_in_proc: Cell::new(false),
             }
         }
