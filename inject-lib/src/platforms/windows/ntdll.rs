@@ -122,11 +122,7 @@ impl NTDLL {
                 //https://docs.microsoft.com/en-us/windows/win32/api/Winternl/ns-winternl-peb
                 if *(&peb as *const PEB64 as *const u8 as *const u64).add(3) != peb.Ldr {
                     //If we get here, it means, that the PEB struct we use is invalid.
-                    #[allow(deprecated)]
-                    //There really is not any other way to describe this error.
-                    return Err(crate::error::Error::Unsuccessful(Some(
-                        "The PEB structure in inject-lib is invalid.".to_string(),
-                    )));
+                    return Err(crate::error::CustomError::InvalidStructure)?;
                 }
                 peb.Ldr as u64
             };

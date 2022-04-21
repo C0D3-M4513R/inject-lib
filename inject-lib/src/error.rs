@@ -42,6 +42,8 @@ pub enum CustomError {
     ZeroBytes,
     ///If the LDR is unpopulated during a get_module_in_proc call
     LDRUninit,
+    ///This errror Indicates, that there is possibly a problem with a structure in this crate
+    InvalidStructure,
 }
 
 impl From<CustomError> for Error {
@@ -177,6 +179,7 @@ impl Display for CustomError {
             CustomError::ModuleListLoop=>write!(f,"We looped through the whole InLoadOrderModuleList, but still have no match. Aborting, because this would end in an endless loop."),
             CustomError::ZeroBytes=>write!(f,"Zero bytes read, but the requested type is not Zero sized."),
             CustomError::LDRUninit=>write!(f,"LDR is not initialised"),
+            CustomError::InvalidStructure=>write!(f,"a structure in inject-lib is invalid.")
         }
     }
 }
