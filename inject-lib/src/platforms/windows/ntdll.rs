@@ -190,7 +190,7 @@ impl NTDLL {
                 };
                 if modlist_addr == first_modlist_addr {
                     let s = crate::error::CustomError::ModuleListLoop;
-                    crate::warn!("{}",s);
+                    crate::warn!("{}", s);
                     return Err(s)?;
                 }
 
@@ -472,7 +472,10 @@ struct FnNtdllWOW<'a, 'b, 'c> {
 }
 impl<'a, 'b, 'c> FnNtdllWOW<'a, 'b, 'c> {
     ///Constructs D
-    pub(self) fn new(name: &'a [u8], #[cfg_attr(target_pointer_width = "64",allow(unused))]wow64name: &'b [u8]) -> Result<Self> {
+    pub(self) fn new(
+        name: &'a [u8],
+        #[cfg_attr(target_pointer_width = "64", allow(unused))] wow64name: &'b [u8],
+    ) -> Result<Self> {
         Ok(FnNtdllWOW {
             ntdll: NTDLL::new()?,
             #[cfg(target_pointer_width = "32")]

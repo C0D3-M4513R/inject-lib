@@ -29,22 +29,22 @@ impl Thread {
     pub(crate) fn wait_for_thread(&self) -> Result<()> {
         info!("Waiting for thread");
         return match unsafe { WaitForSingleObject(self.thread, INFINITE) } {
-//             0x80 => Err(Error::Winapi(
-//                "WaitForSingleObject returned WAIT_ABANDONED".to_string(),
-//                0x80,
-//            )), //WAIT_ABANDONED
-              0x0 => {
-                  info!("Dll eject success? IDK?! Hopefully? WaitForSingleObject returned WAIT_OBJECT_0");
-                  Ok(())
+            //             0x80 => Err(Error::Winapi(
+            //                "WaitForSingleObject returned WAIT_ABANDONED".to_string(),
+            //                0x80,
+            //            )), //WAIT_ABANDONED
+            0x0 => {
+                info!("Dll eject success? IDK?! Hopefully? WaitForSingleObject returned WAIT_OBJECT_0");
+                Ok(())
             } //WAIT_OBJECT_0
-//            0x102 => Err(Error::Winapi(
-//                "Timeout hit at WaitForSingleObject.".to_string(),
-//                0x102,
-//            )), //WAIT_TIMEOUT
-//            0xFFFFFFFF => Err(Error::Winapi(
-//                "Wait_Failed hit at WaitForSingleObject.".to_string(),
-//                0xFFFFFFFF,
-//            )), //WAIT_FAILED
+            //            0x102 => Err(Error::Winapi(
+            //                "Timeout hit at WaitForSingleObject.".to_string(),
+            //                0x102,
+            //            )), //WAIT_TIMEOUT
+            //            0xFFFFFFFF => Err(Error::Winapi(
+            //                "Wait_Failed hit at WaitForSingleObject.".to_string(),
+            //                0xFFFFFFFF,
+            //            )), //WAIT_FAILED
             e => Err(CustomError::WaitForSingleObject(e))?,
         };
     }

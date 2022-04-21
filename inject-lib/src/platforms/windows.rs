@@ -20,8 +20,8 @@ use winapi::um::tlhelp32::{
     TH32CS_SNAPMODULE32, TH32CS_SNAPPROCESS,
 };
 use winapi::um::winnt::{
-    PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION,
-    PROCESS_VM_READ, PROCESS_VM_WRITE,
+    PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION, PROCESS_VM_READ,
+    PROCESS_VM_WRITE,
 };
 
 mod mem;
@@ -538,7 +538,8 @@ fn get_module<P: AsRef<Path>>(name: P, proc: &Process) -> Result<(String, u64)> 
             return ntdll::NTDLL::new()?.get_module_in_proc(
                 proc,
                 predicate(
-                    |w: pelite::Wrap<LDR_DATA_TABLE_ENTRY32, ntdll::LDR_DATA_TABLE_ENTRY64>| match w {
+                    |w: pelite::Wrap<LDR_DATA_TABLE_ENTRY32, ntdll::LDR_DATA_TABLE_ENTRY64>| match w
+                    {
                         pelite::Wrap::T32(w) => w.DllBase as u64,
                         pelite::Wrap::T64(w) => w.DllBase as u64,
                     },

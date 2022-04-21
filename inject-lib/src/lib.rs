@@ -78,7 +78,7 @@ impl<'a> Injector<'a> {
     #[cfg(target_family = "windows")]
     ///This Function will find all currently processes, with a given name.
     ///Even if no processes are found, an empty Vector should return.
-    pub fn find_pid<P: AsRef<Path>>(name: P) -> Result<Vec<u32>>{
+    pub fn find_pid<P: AsRef<Path>>(name: P) -> Result<Vec<u32>> {
         platforms::windows::InjectWin::find_pid(name)
     }
 }
