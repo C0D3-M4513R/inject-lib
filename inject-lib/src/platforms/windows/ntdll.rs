@@ -4,14 +4,12 @@ mod types; //These are exclusively ntdll types
 use super::macros::{check_ptr, err};
 use super::process::Process;
 use super::{get_windir, predicate, str_from_wide_str};
-use crate::error::Error;
 use crate::Result;
-use ntapi::ntpsapi::PROCESS_BASIC_INFORMATION;
 use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
 use once_cell::sync::OnceCell;
 use pelite::Wrap;
 use std::ffi::OsStr;
-use std::marker::PhantomData;
+use std::mem::MaybeUninit;
 use std::ops::Shl;
 use std::os::windows::ffi::OsStrExt;
 pub use types::LDR_DATA_TABLE_ENTRY64;
@@ -96,16 +94,17 @@ impl NTDLL {
         proc.err_pseudo_handle()?;
         let pid_under_wow = proc.is_under_wow()?;
         crate::info!("pid is under wow:{}", pid_under_wow);
-        let peb_addr: u64=
         //This gets the PEB address, from the PBI
-        if pid_under_wow {
-            let pbi: PROCESS_BASIC_INFORMATION=
-                self.query_process_information(proc, ntapi::ntpsapi::ProcessBasicInformation)?;
-            pbi.PebBaseAddress as u64
-        } else {
-            let pbi: types::PROCESS_BASIC_INFORMATION_WOW64 =
-                self.query_process_information(proc, ntapi::ntpsapi::ProcessBasicInformation)?;
-            pbi.PebBaseAddress as u64
+        let peb_addr: u64 = {
+            if pid_under_wow {
+                let pbi: ntapi::ntpsapi::PROCESS_BASIC_INFORMATION =
+                    self.query_process_information(proc, ntapi::ntpsapi::ProcessBasicInformation)?;
+                pbi.PebBaseAddress as u64
+            } else {
+                let pbi: types::PROCESS_BASIC_INFORMATION_WOW64 =
+                    self.query_process_information(proc, ntapi::ntpsapi::ProcessBasicInformation)?;
+                pbi.PebBaseAddress as u64
+            }
         };
         crate::debug!("Peb addr is {:x?}", peb_addr);
         let ldr_addr;
@@ -123,18 +122,12 @@ impl NTDLL {
                 //https://docs.microsoft.com/en-us/windows/win32/api/Winternl/ns-winternl-peb
                 if *(&peb as *const PEB64 as *const u8 as *const u64).add(3) != peb.Ldr {
                     //If we get here, it means, that the PEB struct we use is invalid.
-                    #[allow(deprecated)]
-                    //There really is not any other way to describe this error.
-                    return Err(crate::error::Error::Unsuccessful(Some(
-                        "The PEB structure in inject-lib is invalid.".to_string(),
-                    )));
+                    return Err(crate::error::CustomError::InvalidStructure)?;
                 }
                 peb.Ldr as u64
             };
             if ldr_addr == 0 {
-                return Err(crate::error::Error::Unsuccessful(Some(
-                    "LDR is not initialised?".to_string(),
-                )));
+                return Err(crate::error::CustomError::LDRUninit)?;
             }
             crate::debug!("Ldr Address is {:x}.", ldr_addr);
         }
@@ -192,9 +185,9 @@ impl NTDLL {
                     }
                 };
                 if modlist_addr == first_modlist_addr {
-                    const RECURSION:&str = "We looped through the whole InLoadOrderModuleList, but still have no match. Aborting, because this would end in an endless loop.";
-                    crate::warn!("{}", RECURSION);
-                    return Err(Error::Unsuccessful(Some(RECURSION.to_string())));
+                    let s = crate::error::CustomError::ModuleListLoop;
+                    crate::warn!("{}", s);
+                    return Err(s)?;
                 }
 
                 let dll_path_buf = self.read_virtual_mem_fn(
@@ -320,6 +313,29 @@ impl NTDLL {
         Ok(buf)
     }
 
+    unsafe fn query_process_information<T>(
+        &self,
+        proc: &Process,
+        pic: ntapi::ntpsapi::PROCESSINFOCLASS,
+    ) -> Result<T>
+    where
+        T: Copy,
+    {
+        let size = core::mem::size_of::<T>();
+        let r = self.query_process_information_raw(proc, pic, size)?;
+        assert!(
+            r.len() >= core::mem::size_of::<T>(),
+            "Not enough bytes, to construct T"
+        );
+        let mut t: T = MaybeUninit::zeroed().assume_init();
+        core::ptr::copy_nonoverlapping(
+            r.as_ptr(),
+            &mut t as *mut T as *mut u8,
+            std::cmp::min(r.len(), size),
+        );
+        Ok(t)
+    }
+
     ///This reads `size` elements, of size T, of memory, from address `addr`, in the process `proc`, into `buf`.
     /// This function checks, if we have been passed a pseudo-handle (GetCurrentProcess).
     /// Those types of handles do not work with ntdll for reasons.
@@ -335,14 +351,12 @@ impl NTDLL {
     ///On other occasions, Windows will return some extraneous value of bytes read.
     ///In those cases, this function will Panic.
     //todo:add a test for this?
-    unsafe fn query_process_information<T>(
+    unsafe fn query_process_information_raw(
         &self,
         proc: &Process,
         pic: ntapi::ntpsapi::PROCESSINFOCLASS,
-    ) -> Result<T>
-    where
-        T: Copy,
-    {
+        size: usize,
+    ) -> Result<Vec<u8>> {
         proc.err_pseudo_handle()?;
         if !proc.has_perm(PROCESS_QUERY_INFORMATION)
             && !proc.has_perm(PROCESS_QUERY_LIMITED_INFORMATION)
@@ -364,52 +378,62 @@ impl NTDLL {
                     b"NtWow64QueryInformationProcess64\0",
                 )
             })?;
-            let cfn = if proc.is_under_wow()? {
-                fns.get_fn()
-            } else {
-                fns.get_wow64()
-            }?
-            .take();
+            let cfn =
+                if super::process::Process::self_proc().is_under_wow()? && !proc.is_under_wow()? {
+                    crate::trace!("Trying to get wow64 fn");
+                    fns.get_wow64()
+                } else {
+                    crate::trace!("Trying to get regular fn");
+                    fns.get_fn()
+                }?
+                .take();
             let cfn: FnNtQueryInformationProcess = core::mem::transmute(*cfn);
             cfn
         };
         //ready things, for function call
         let mut i = 0u32;
         let i_ptr = &mut i as *mut u32;
-        let size_peb: usize = std::mem::size_of::<T>();
-        let mut buf: Vec<u8> = Vec::with_capacity(size_peb);
+        //Lets assume the worst case scenario, and allocate as much, as we might need.
+        //Then we will later scale back to the size we actually need.
+        let mut buf: Vec<u8> = Vec::with_capacity(size);
+        for _ in 0..size {
+            buf.push(0);
+        }
         //Call function
-        crate::trace!("Running NtQueryInformationProcess with fnptr:{:x?} proc:{:x?},pic:{:x}. Size is {}, buf is {:x?}",cfn as usize,proc.get_proc(),pic,size_peb, buf);
+        crate::trace!("Running NtQueryInformationProcess with fnptr:{:x?} proc:{:x?},pic:{:x}. Size is {}, buf is {:x?}",cfn as usize,proc.get_proc(),pic,size, buf);
+
         let status = crate::error::Ntdll::new(cfn(
             proc.get_proc(),
             pic,
             buf.as_mut_ptr() as PVOID,
-            size_peb as u32,
+            size as u32,
             i_ptr,
         ));
+        // let status=crate::error::Ntdll::new(0);
         if status.is_error() || status.is_warning() {
             return Err(status.into());
         }
-        assert!(i<=size_peb as u32,"Detected buffer overflow. Stopping here, due to unknown or possibly malicious side-effects.");
-        if i == 0 && size_peb != 0 {
-            return Err(crate::error::Error::Unsuccessful(Some(
-                "Zero bytes read, but the requested type is not Zero sized.".to_string(),
-            )));
+        assert!(i<= size as u32, "Detected buffer overflow. Stopping here, due to unknown or possibly malicious side-effects.");
+        if i == 0 && size != 0 {
+            return Err(crate::error::CustomError::ZeroBytes)?;
         }
         //Truncate vec, to only use initialized memory.
-        buf.set_len(i as usize);
+        // buf.set_len(i as usize);
+        {
+            while buf.len() < i as usize {
+                //We do not need to check for none here, since it is guaranteed that: buf.len()=>i
+                assert!(buf.pop().is_some(),"Buffer was shorter than be expected. earlier asserts should have assured this?");
+            }
+        }
         buf.shrink_to_fit();
         crate::trace!(
             "qip {:x},0x{:x}/0x{:x} buf is {:x?}",
             status.get_status(),
             i,
-            size_peb,
+            size,
             buf
         );
-        //This should be safe, since the vec has as many bytes, as T
-        let pbi_ptr: *mut T = std::mem::transmute(buf.leak().as_mut_ptr());
-        // trace!("exitstatus:{:x},pebaddress:{:x},baseprio:{:x},upid:{:x},irupid:{:x}",pbi.ExitStatus,pbi.PebBaseAddress,pbi.BasePriority,pbi.UniqueProcessId,pbi.InheritedFromUniqueProcessId);
-        Ok(*pbi_ptr)
+        Ok(buf)
     }
 }
 ///Helps to differentiate between two function types
@@ -436,7 +460,7 @@ struct FnNtdllWOW<'a, 'b, 'c> {
     #[cfg(target_pointer_width = "32")]
     wow64name: &'b [u8],
     #[cfg(target_pointer_width = "64")]
-    _phantom: PhantomData<&'b [u8]>,
+    _phantom: std::marker::PhantomData<&'b [u8]>,
     name: &'a [u8],
     #[cfg(target_pointer_width = "32")]
     wowfn: OnceCell<usize>,
@@ -444,13 +468,16 @@ struct FnNtdllWOW<'a, 'b, 'c> {
 }
 impl<'a, 'b, 'c> FnNtdllWOW<'a, 'b, 'c> {
     ///Constructs D
-    pub(self) fn new(name: &'a [u8], wow64name: &'b [u8]) -> Result<Self> {
+    pub(self) fn new(
+        name: &'a [u8],
+        #[cfg_attr(target_pointer_width = "64", allow(unused))] wow64name: &'b [u8],
+    ) -> Result<Self> {
         Ok(FnNtdllWOW {
             ntdll: NTDLL::new()?,
             #[cfg(target_pointer_width = "32")]
             wow64name,
             #[cfg(target_pointer_width = "64")]
-            _phantom: PhantomData::default(),
+            _phantom: std::marker::PhantomData::default(),
             name,
             #[cfg(target_pointer_width = "32")]
             wowfn: OnceCell::new(),
@@ -504,8 +531,8 @@ impl Drop for NTDLL {
 #[cfg(test)]
 pub mod test {
     use super::NTDLL;
+    use crate::platforms::windows::ntdll::types;
     use crate::Result;
-    use ntapi::ntpsapi::PROCESS_BASIC_INFORMATION;
     use winapi::um::winnt::PROCESS_ALL_ACCESS;
 
     #[test]
@@ -549,14 +576,13 @@ pub mod test {
     }
     #[test]
     fn no_find_get_module_in_proc() -> Result<()> {
-        const RECURSION:&str = "We looped through the whole InLoadOrderModuleList, but still have no match. Aborting, because this would end in an endless loop.";
         let proc = super::super::process::Process::new(std::process::id(), PROCESS_ALL_ACCESS)?;
         let ntdll = NTDLL::new()?;
         let x = unsafe { ntdll.get_module_in_proc(&proc, |_, _| None::<()>) };
         assert!(x.is_err(),"get_module_in_proc found something, eventhough it shouldn't have. We asked for NOTHING.");
         assert_eq!(
             x.unwrap_err(),
-            crate::error::Error::Unsuccessful(Some(RECURSION.to_string()))
+            crate::error::Error::InjectLib(crate::error::CustomError::ModuleListLoop)
         );
         Ok(())
     }
@@ -605,13 +631,15 @@ pub mod test {
     }
 
     #[test]
+    // #[ignore]
     fn query_process_information_self() -> Result<()> {
         let ntdll = super::NTDLL::new()?;
         //test real handle self
         {
             let proc = super::super::process::Process::new(std::process::id(), PROCESS_ALL_ACCESS)?;
+
             let r = unsafe {
-                ntdll.query_process_information::<PROCESS_BASIC_INFORMATION>(
+                ntdll.query_process_information::<ntapi::ntpsapi::PROCESS_BASIC_INFORMATION>(
                     &proc,
                     ntapi::ntpsapi::ProcessBasicInformation,
                 )
@@ -622,19 +650,26 @@ pub mod test {
         {
             let (mut c, proc) = super::super::test::create_cmd();
             let r = unsafe {
-                ntdll.query_process_information::<PROCESS_BASIC_INFORMATION>(
+                ntdll.query_process_information::<types::PROCESS_BASIC_INFORMATION_WOW64>(
                     &proc,
                     ntapi::ntpsapi::ProcessBasicInformation,
                 )
             };
-            assert!(r.is_ok(), "foreign query process information failed");
             c.kill().unwrap();
+            assert!(
+                r.is_ok(),
+                "foreign query process information failed,{}",
+                r.unwrap_err()
+            );
         }
         //test pseudo handle self
         {
             let proc = super::super::process::Process::self_proc();
-            let r: Result<PROCESS_BASIC_INFORMATION> = unsafe {
-                ntdll.query_process_information(proc, ntapi::ntpsapi::ProcessBasicInformation)
+            let r = unsafe {
+                ntdll.query_process_information::<ntapi::ntpsapi::PROCESS_BASIC_INFORMATION>(
+                    proc,
+                    ntapi::ntpsapi::ProcessBasicInformation,
+                )
             };
             assert!(r.is_err(), "Pseudo-Handles do not work on ntdll?");
             let r = unsafe { r.unwrap_err_unchecked() }; //Safety is checked above.
@@ -644,5 +679,13 @@ pub mod test {
             );
         }
         Ok(())
+    }
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn test_size() {
+        assert_eq!(
+            core::mem::size_of::<ntapi::ntpsapi::PROCESS_BASIC_INFORMATION>(),
+            core::mem::size_of::<types::PROCESS_BASIC_INFORMATION_WOW64>()
+        )
     }
 }

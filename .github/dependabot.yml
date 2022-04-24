@@ -10,6 +10,6 @@ updates:
             interval: "daily"
     # Maintain dependencies for rust
     -   package-ecosystem: "cargo"
-        directory: "/"
+        directory: "./inject-lib"
         schedule:
             interval: "monthly"

@@ -92,6 +92,7 @@ impl<'a> MemPage<'a> {
     ///Reads the contents of the memory page.
     ///# Panic
     /// This Panics, if the read number of bytes exceed size.
+    #[allow(unused)]
     pub fn read(&self, size: usize) -> Result<Vec<u8>> {
         if !self.proc.has_perm(PROCESS_VM_READ) {
             return Err(crate::error::Error::Io(std::io::Error::from(

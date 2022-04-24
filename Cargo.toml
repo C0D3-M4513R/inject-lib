@@ -1,53 +1,5 @@
-[package]
-name = "inject-lib"
-version = "0.1.1"
-description = "A windows dll injection library written in rust with minimal dependencies."
-readme = "README.md"
-repository = "https://github.com/C0D3-M4513R/inject-lib"
-homepage = "https://github.com/C0D3-M4513R/inject-lib"
-documentation = "https://docs.rs/inject-lib"
-authors = ["C0D3 M4513R <28912031+C0D3-M4513R@users.noreply.github.com>"]
-edition = "2021"
-license = "LGPL-2.1-only"
-categories = []
-keywords = ["dll-injection", "dll", "injector", "windows"]
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[target.'cfg(target_family="windows")'.dependencies.winapi]
-version = "0.3"
-
-features=[
-    "winnt",#Various constants/types, used in injection/ejection
-    "ntdef",#Various constants/types, used in injection/ejection
-    "basetsd",#Types
-    "minwindef",#Types
-    "errhandlingapi",#Get Errors
-    "tlhelp32",#Find PID/Process Snapshot
-    "handleapi",#Close handles, which are returned, by other syscalls, buring injection/ejection
-    "processthreadsapi",#used in injection/ejection.
-    "libloaderapi",#used in injection/ejection.
-    "wow64apiset",#determine if proc is running under WOW
-    "sysinfoapi",#determine if self is running under WOW
-    "memoryapi",#Allocate,Free and Write Process memory. Used in injection and ejection
-    "synchapi",#Wait, until Dll is actually attached.
-    "winbase",#Infinity. Used with "synchapi"
-    "impl-debug"
+[workspace]
+members = [
+    "inject-lib",
+    "dll-inject"
 ]
-
-[target.'cfg(target_family="windows")'.dependencies]
-ntapi={version="0.3",optional=true}#Types
-pelite = "0.9" #to read/parse dll information. #todo: maybe replace with exe-rs?
-
-[dependencies]
-log = "0.4"
-once_cell="1.10"
-
-[features]
-default=[]
-nightly=[]
-ntdll=["ntapi"]
-x86tox64=["ntdll"]
-
-[package.metadata.docs.rs]
-targets = ["x86_64-pc-windows-msvc", "i686-pc-windows-msvc"]

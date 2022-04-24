@@ -22,10 +22,14 @@
 //! If this library is supposed to be helpful I'd want to not require to run it as root.
 //! Unfortunately some steps involve calling ptrace. Access to the command is restricted, if you are not the parent process of the process you are trying to trace.
 //! These requirements would mean, that we can only inject so files to processes, that the program this library itself created.
+// #![feature(strict_provenance)]
+// #![warn(lossy_provenance_casts)]
 #![warn(missing_docs)]
 
-#[derive(Debug, Clone)]
 ///This struct will expose certain module private functions, to actually use the api.
+///The exact contents should be considered implementation detail.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Injector<'a> {
     ///The path to a dll. This may be in any format, that rust understands
     pub dll: &'a str,
@@ -35,11 +39,21 @@ pub struct Injector<'a> {
 
 pub(crate) type Result<T> = std::result::Result<T, error::Error>;
 pub(crate) use log::{debug, error, info, trace, warn};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 ///Holds all error types
 pub mod error;
 mod platforms;
+///This represents the actions, that are supported with a dll.
+pub trait Inject {
+    ///Injects a dll
+    fn inject(&self) -> Result<()>;
+    ///Ejects a dll
+    fn eject(&self) -> Result<()>;
+    ///This Function will find all currently processes, with a given name.
+    ///Even if no processes are found, an empty Vector should return.
+    fn find_pid<P: AsRef<Path>>(name: P) -> Result<Vec<u32>>;
+}
 
 impl<'a> Injector<'a> {
     ///Create a new Injector object.
@@ -53,6 +67,19 @@ impl<'a> Injector<'a> {
     ///Sets the pid
     pub fn set_pid(&mut self, pid: u32) {
         self.pid = pid;
+    }
+    #[cfg(target_family = "windows")]
+    ///Gets the Platform specific Injector.
+    ///Currently only windows is supported.
+    ///wait indicates, if we should wait on the dll to attach to the process
+    pub fn inject(&self, wait: bool) -> impl Inject + '_ {
+        platforms::windows::InjectWin { inj: self, wait }
+    }
+    #[cfg(target_family = "windows")]
+    ///This Function will find all currently processes, with a given name.
+    ///Even if no processes are found, an empty Vector should return.
+    pub fn find_pid<P: AsRef<Path>>(name: P) -> Result<Vec<u32>> {
+        platforms::windows::InjectWin::find_pid(name)
     }
 }
 
