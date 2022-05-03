@@ -14,6 +14,7 @@ macro_rules! check_ptr {
     ($name:ident($($args:expr),*),$predicate:expr)=>{
         {
             #[allow(unsafe_op_in_unsafe_fn)]//We might call this in a unsafe function
+            #[allow(unused_unsafe)]
             let _tmp = unsafe{$name($($args),*)};
             if $crate::platforms::windows::macros::__call__(_tmp,$predicate){
                 return Err($crate::error::Error::from(std::stringify!($name)));

@@ -1,16 +1,11 @@
 #![cfg(windows)]
 mod macros;
 
-use crate::{strip_path, Injector, Result};
+use crate::{strip_path, Inject, Injector, Result};
 use macros::check_ptr;
 use std::ffi::OsString;
 
-use log::{debug, error, info, trace, warn};
-#[cfg(feature = "ntdll")]
-use ntapi::ntapi_base::CLIENT_ID64;
-#[cfg(feature = "ntdll")]
-use ntapi::ntrtl::RtlCreateUserThread;
-use pelite::{Pod, Wrap};
+use pelite::Pod;
 use std::mem::size_of;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
@@ -24,8 +19,8 @@ use winapi::um::tlhelp32::{
     TH32CS_SNAPMODULE32, TH32CS_SNAPPROCESS,
 };
 use winapi::um::winnt::{
-    PROCESS_ALL_ACCESS, PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION,
-    PROCESS_VM_READ, PROCESS_VM_WRITE,
+    PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION, PROCESS_VM_READ,
+    PROCESS_VM_WRITE,
 };
 
 mod mem;
@@ -36,44 +31,58 @@ mod thread;
 
 #[cfg(feature = "ntdll")]
 use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
-use winapi::shared::ntdef::PHANDLE;
 
 use crate::error::Error;
 use mem::MemPage;
 use process::Process;
-use thread::Thread;
 
 ///This function builds a String, from a WTF-encoded buffer.
 pub fn str_from_wide_str(v: &[u16]) -> Result<String> {
     OsString::from_wide(v).into_string().map_err(|e| {
-        warn!("Couldn't convert widestring, to string. The Buffer contained invalid non-UTF-8 characters . Buf is {:#?}.", e);
+        crate::warn!("Couldn't convert widestring, to string. The Buffer contained invalid non-UTF-8 characters . Buf is {:#?}.", e);
         crate::error::Error::WTFConvert(e)
     })
 }
 
-impl<'a> Injector<'a> {
-    ///This Function will find all currently processes, with a given name.
-    ///Even if no processes are found, an empty Vector should return.
-    pub fn find_pid<P: AsRef<Path>>(name: P) -> Result<Vec<u32>> {
-        let name = name.as_ref();
-        Self::find_pid_selector(|p| {
-            return match str_from_wide_str(crate::trim_wide_str(p.szExeFile.to_vec()).as_slice()) {
-                Ok(str) => {
-                    debug!("Checking {} against {}", str, name.to_string_lossy());
-                    return name.ends_with(str.as_str());
-                }
-                Err(e) => {
-                    warn!("Skipping check of process. Can't construct string, to compare against. Err:{:#?}",e);
-                    false
-                }
-            };
-        })
+pub struct InjectWin<'a> {
+    pub inj: &'a Injector<'a>,
+    pub wait: bool,
+}
+
+impl<'a> Inject for InjectWin<'a> {
+    ///Inject a DLL into another process
+    ///Notice:This implementation blocks, and waits, until the library is injected, or the injection failed.
+    fn inject(&self) -> Result<()> {
+        let proc = Process::new(
+            self.inj.pid,
+            PROCESS_CREATE_THREAD
+                | PROCESS_VM_WRITE
+                | PROCESS_VM_READ
+                | PROCESS_VM_OPERATION
+                | PROCESS_QUERY_INFORMATION,
+        )?;
+        //Is the dll already injected?
+        if get_module(strip_path(self.inj.dll)?.as_str(), &proc).is_ok() {
+            return Err(Error::Unsupported(Some("dll already injected".to_string())));
+        }
+
+        //Prepare Argument for LoadLibraryW
+        //scope here, so Vec will get deleted after this
+        let mem = {
+            let full_path: PathBuf = std::fs::canonicalize(self.inj.dll)?;
+            let path: Vec<u16> = full_path.as_os_str().encode_wide().chain(Some(0)).collect();
+            let mut mempage =
+                mem::MemPage::new(&proc, path.len() * core::mem::size_of::<u16>(), false)?;
+            mempage.write(path.as_bytes())?;
+            mempage
+        };
+        self.exec_fn_in_proc(&proc, "LoadLibraryW", mem)
     }
     ///This function will attempt, to eject a dll from another process.
     ///Notice:This implementation blocks, and waits, until the library is ejected?, or the ejection failed.
-    pub fn eject(&self) -> Result<()> {
+    fn eject(&self) -> Result<()> {
         let proc = Process::new(
-            self.pid,
+            self.inj.pid,
             PROCESS_CREATE_THREAD
                 | PROCESS_VM_WRITE
                 | PROCESS_VM_READ
@@ -87,10 +96,10 @@ impl<'a> Injector<'a> {
             )));
         }
 
-        let name = strip_path(self.dll)?;
+        let name = strip_path(self.inj.dll)?;
         // let (_path, base) = get_module(name.as_str(), &proc)?;
         let handle = get_module_in_pid(
-            self.pid,
+            self.inj.pid,
             |m| {
                 if let Ok(v) = str_from_wide_str(&m.szModule) {
                     if cmp(&name)(&&v) {
@@ -104,7 +113,7 @@ impl<'a> Injector<'a> {
             },
             None,
         )?;
-        info!("Found dll in proc, with handle:{:#x?}", handle);
+        crate::info!("Found dll in proc, with handle:{:#x?}", handle);
         //If the target process is x86, this is slightly too much,
         //but the windows kernel seems to allocate at least 4k, so this does not matter.
         const SIZE: usize = core::mem::size_of::<u64>();
@@ -124,34 +133,26 @@ impl<'a> Injector<'a> {
         self.exec_fn_in_proc(&proc, "FreeLibrary", mem)
     }
 
-    ///Inject a DLL into another process
-    ///Notice:This implementation blocks, and waits, until the library is injected, or the injection failed.
-    pub fn inject(&self) -> Result<()> {
-        let proc = Process::new(
-            self.pid,
-            PROCESS_CREATE_THREAD
-                | PROCESS_VM_WRITE
-                | PROCESS_VM_READ
-                | PROCESS_VM_OPERATION
-                | PROCESS_QUERY_INFORMATION,
-        )?;
-        //Is the dll already injected?
-        if get_module(strip_path(self.dll)?.as_str(), &proc).is_ok() {
-            return Err(Error::Unsupported(Some("dll already injected".to_string())));
-        }
-
-        //Prepare Argument for LoadLibraryW
-        //scope here, so Vec will get deleted after this
-        let mem = {
-            let full_path: PathBuf = std::fs::canonicalize(self.dll)?;
-            let path: Vec<u16> = full_path.as_os_str().encode_wide().chain(Some(0)).collect();
-            let mut mempage =
-                mem::MemPage::new(&proc, path.len() * core::mem::size_of::<u16>(), false)?;
-            mempage.write(path.as_bytes())?;
-            mempage
-        };
-        self.exec_fn_in_proc(&proc, "LoadLibraryW", mem)
+    ///This Function will find all currently processes, with a given name.
+    ///Even if no processes are found, an empty Vector should return.
+    fn find_pid<P: AsRef<Path>>(name: P) -> Result<Vec<u32>> {
+        let name = name.as_ref();
+        Self::find_pid_selector(|p| {
+            return match str_from_wide_str(crate::trim_wide_str(p.szExeFile.to_vec()).as_slice()) {
+                Ok(str) => {
+                    crate::debug!("Checking {} against {}", str, name.to_string_lossy());
+                    return name.ends_with(str.as_str());
+                }
+                Err(e) => {
+                    crate::warn!("Skipping check of process. Can't construct string, to compare against. Err:{:#?}",e);
+                    false
+                }
+            };
+        })
     }
+}
+
+impl<'a> InjectWin<'a> {
     ///This function executes the entry_fn from Kernel32.dll with the argument of mem in the process proc.
     ///the process mem was created with, and proc must hold the same handle.
     fn exec_fn_in_proc(&self, proc: &Process, entry_fn: &str, mem: MemPage) -> Result<()> {
@@ -169,8 +170,8 @@ impl<'a> Injector<'a> {
         //https://wbenny.github.io/2018/11/04/wow64-internals.html
         //https://helloacm.com/how-to-check-if-a-dll-or-exe-is-32-bit-or-64-bit-x86-or-x64-using-vbscript-function/
         //TODO: Recheck this Fn, and all the winapi calls
-        if self.pid == 0 {
-            warn!("Supplied id is 0. Will not inject, as it is not supported by windows.");
+        if self.inj.pid == 0 {
+            crate::warn!("Supplied id is 0. Will not inject, as it is not supported by windows.");
             return Err(Error::Unsupported(Some(
                 "PID 0 is an invalid target under windows.".to_string(),
             )));
@@ -182,20 +183,21 @@ impl<'a> Injector<'a> {
         }
 
         let self_proc = Process::self_proc();
-        debug!("Process is {}", proc);
+        crate::debug!("Process is {}", proc);
 
         //Is the target exe x86?
         let pid_is_under_wow = proc.is_under_wow()?;
         // Is this exe x86?
         let self_is_under_wow = self_proc.is_under_wow()?;
 
-        info!(
+        crate::info!(
             "pid_is_under_wow:{},self_is_under_wow:{}",
-            pid_is_under_wow, self_is_under_wow
+            pid_is_under_wow,
+            self_is_under_wow
         );
         if self_is_under_wow && !pid_is_under_wow {
             if cfg!(feature = "ntdll") {
-                warn!("This injection will use a slightly different method, than usually. This is normal, when the injector is x86, but the pid specified is a x64 process.\
+                crate::warn!("This injection will use a slightly different method, than usually. This is normal, when the injector is x86, but the pid specified is a x64 process.\
 				We will be using ntdll methods. The ntdll.dll is technically not a public facing windows api.");
             } else {
                 return Err(Error::Unsupported(Some("Cannot continue injection. You are trying to inject from a x86 injector into a x64 application. That is unsupportable, without access to ntdll functions.".to_string())));
@@ -205,14 +207,14 @@ impl<'a> Injector<'a> {
         let dll_is_x64 = self.get_is_dll_x64()?;
 
         if dll_is_x64 && pid_is_under_wow {
-            error!(
+            crate::error!(
                 "Injecting a x64 dll, into a x86 exe is unsupported. Will not continue for now."
             );
             return Err(Error::Unsupported(Some(
                 "Injecting a x64 dll, into a x86 exe is unsupported.".to_string(),
             )));
         } else if !dll_is_x64 && !pid_is_under_wow {
-            error!("Injecting a x86 dll, into a x64 exe is unsupported. Could this case be supported? Send a PR, if you think, you can make this work! Will NOT abort, but expect the dll-injection to fail");
+            crate::error!("Injecting a x86 dll, into a x64 exe is unsupported. Could this case be supported? Send a PR, if you think, you can make this work! Will NOT abort, but expect the dll-injection to fail");
             return Err(Error::Unsupported(Some(
                 "Injecting a x86 dll, into a x64 exe is unsupported.".to_string(),
             )));
@@ -228,7 +230,7 @@ impl<'a> Injector<'a> {
             let (path, base) = get_module("KERNEL32.DLL", &proc)?;
             base + get_dll_export(entry_fn, path)? as u64
         };
-        info!(
+        crate::info!(
             "Allocated {} Parameter at {:#x?}. fn ptr is {:#x} vs {:#x}",
             entry_fn,
             mem.get_address(),
@@ -264,15 +266,15 @@ impl<'a> Injector<'a> {
                         )?
                     }
                 };
-                #[cfg(not(target_arch = "x64"))]
+                #[cfg(not(target_arch = "x86"))]
                 let (r, t, _c) = {
-                    let mut c = CLIENT_ID64 {
+                    let mut c = ntapi::ntapi_base::CLIENT_ID64 {
                         UniqueProcess: 0,
                         UniqueThread: 0,
                     };
                     let mut t = std::ptr::null_mut();
                     let r = unsafe {
-                        RtlCreateUserThread(
+                        ntapi::ntrtl::RtlCreateUserThread(
                             proc.get_proc(),
                             std::ptr::null_mut(),
                             0,
@@ -281,8 +283,8 @@ impl<'a> Injector<'a> {
                             0,
                             std::mem::transmute(entry_point as usize),
                             mem.get_address(),
-                            &mut t as PHANDLE,
-                            std::mem::transmute(&mut c as *mut CLIENT_ID64),
+                            &mut t as winapi::shared::ntdef::PHANDLE,
+                            core::mem::transmute(&mut c as ntapi::ntapi_base::PCLIENT_ID64),
                         )
                     };
                     (r, t, c)
@@ -296,7 +298,11 @@ impl<'a> Injector<'a> {
                     }
                     _ => {}
                 }
-                return unsafe { Thread::new(t)? }.wait_for_thread();
+                return if self.wait {
+                    unsafe { thread::Thread::new(t)? }.wait_for_thread()
+                } else {
+                    Ok(())
+                };
             }
         }
         if !self_is_under_wow || pid_is_under_wow {
@@ -313,14 +319,17 @@ impl<'a> Injector<'a> {
                 ))
             }?;
             let thread_id = thread_id;
-            trace!("Thread is {:?} and thread id is {}", *thread, thread_id);
-            info!("Waiting for DLL");
+            crate::trace!("Thread is {:?} and thread id is {}", *thread, thread_id);
+            crate::info!("Waiting for DLL");
             // std::thread::sleep(Duration::new(0,500));//todo: why is this necessary, (only) when doing cargo run?
-            return thread.wait_for_thread();
+            return if self.wait {
+                thread.wait_for_thread()
+            } else {
+                Ok(())
+            };
         }
-        return Err(Error::Unsuccessful(Some(
-            "No viable injection method.".to_string(),
-        )));
+        //The ? should automatically convert this to the correct Error type.
+        Err(crate::error::CustomError::NoViableInjector)?
         //Check, if the dll is actually loaded?
         //todo: can we skip this? is the dll always guaranteed to be loaded here, or is it up to the dll, to decide that?
         //todo: re-add a check, for loaded modules
@@ -330,7 +339,7 @@ impl<'a> Injector<'a> {
     }
 
     ///Find a PID, where the process-name matches some user defined selector
-    pub fn find_pid_selector<F>(select: F) -> Result<Vec<u32>>
+    fn find_pid_selector<F>(select: F) -> Result<Vec<u32>>
     where
         F: Fn(&PROCESSENTRY32W) -> bool,
     {
@@ -339,7 +348,7 @@ impl<'a> Injector<'a> {
         if snap_handle == INVALID_HANDLE_VALUE {
             return Err(macros::err("CreateToolhelp32Snapshot"));
         }
-        trace!("Got Snapshot of processes");
+        crate::trace!("Got Snapshot of processes");
         let mut val = PROCESSENTRY32W {
             dwSize: size_of::<PROCESSENTRY32W>() as u32,
             cntUsage: 0,      //This member is no longer used and is always set to zero.
@@ -362,7 +371,7 @@ impl<'a> Injector<'a> {
             return Err(macros::err("Process32FirstW"));
         }
 
-        trace!("Ran Process32FirstW");
+        crate::trace!("Ran Process32FirstW");
         loop {
             if select(&val) {
                 pids.push(val.th32ProcessID);
@@ -375,9 +384,8 @@ impl<'a> Injector<'a> {
     }
     ///This function will return, whether a dll is x64, or x86.
     ///The Return value will be Ok(true), if the dll is x64(64bit), and Ok(false), if the dll is x86(32bit).
-    pub fn get_is_dll_x64(&self) -> Result<bool> {
-        let dll = std::fs::read(self.dll)?;
-        // let parsed = result!(Wrap::<Pelite::pe32::PeFile,Pelite::pe64::PeFile>::from_bytes(dll.as_slice()));
+    fn get_is_dll_x64(&self) -> Result<bool> {
+        let dll = std::fs::read(self.inj.dll)?;
         return match pelite::pe64::PeFile::from_bytes(dll.as_slice()) {
             Ok(_) => Ok(true),
             Err(pelite::Error::PeMagic) => pelite::pe32::PeFile::from_bytes(dll.as_slice())
@@ -454,10 +462,10 @@ fn get_windir<'a>() -> Result<&'a String> {
         assert!(i2<=i,"GetSystemWindowsDirectoryA says, that {} bytes are needed, but then changed it's mind. Now {} bytes are needed.",i,i2);
 		unsafe{str_buf.set_len(i2 as usize)};
 		let string = str_from_wide_str(str_buf.as_slice())?;
-		debug!("Windir is {},{},{}",string,i,i2);
+        crate::debug!("Windir is {},{},{}",string,i,i2);
 		Ok(string)
 	})?;
-    debug!("Windir is '{}'", str);
+    crate::debug!("Windir is '{}'", str);
     Ok(str)
 }
 
@@ -519,20 +527,21 @@ fn get_module<P: AsRef<Path>>(name: P, proc: &Process) -> Result<(String, u64)> 
             }
         }
     } else {
-        warn!("We are injecting from a x86 injector into a x64 target executable. ");
+        crate::warn!("We are injecting from a x86 injector into a x64 target executable. ");
         #[cfg(not(feature = "ntdll"))]
         return Err(Error::Unsupported(Some("No Ntdll support enabled. Cannot get module. Target process is x64, but we are compiled as x86.".to_string())));
     }
     #[cfg(feature = "ntdll")]
     {
-        info!("Trying get_module_in_proc as fallback method.");
+        crate::info!("Trying get_module_in_proc as fallback method.");
         unsafe {
             return ntdll::NTDLL::new()?.get_module_in_proc(
                 proc,
                 predicate(
-                    |w: Wrap<LDR_DATA_TABLE_ENTRY32, ntdll::LDR_DATA_TABLE_ENTRY64>| match w {
-                        Wrap::T32(w) => w.DllBase as u64,
-                        Wrap::T64(w) => w.DllBase as u64,
+                    |w: pelite::Wrap<LDR_DATA_TABLE_ENTRY32, ntdll::LDR_DATA_TABLE_ENTRY64>| match w
+                    {
+                        pelite::Wrap::T32(w) => w.DllBase as u64,
+                        pelite::Wrap::T64(w) => w.DllBase as u64,
                     },
                     |x| (&cmp)(&x),
                 ),
@@ -563,16 +572,17 @@ fn get_dll_export(name: &str, path: String) -> Result<u32> {
     let k32 = std::fs::read(&path)?;
     let dll_parsed = pelite::PeFile::from_bytes(k32.as_slice())?;
     let rva = dll_parsed.get_export_by_name(name)?.symbol().unwrap();
-    trace!("Found {} at rva:{} in dll {}", name, rva, path);
+    crate::trace!("Found {} at rva:{} in dll {}", name, rva, path);
     Ok(rva)
 }
 
 #[cfg(test)]
 pub mod test {
-    use crate::{Injector, Result};
+    use crate::error::Error;
+    use crate::platforms::windows::InjectWin;
+    use crate::{Inject, Result};
     use std::cell::Cell;
     use std::ffi::OsString;
-    use std::io::Read;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::AsRawHandle;
     use std::os::windows::process::CommandExt;
@@ -591,23 +601,31 @@ pub mod test {
     #[derive(Debug)]
     pub(super) struct FNS {
         pub get_module: Cell<bool>,
+        #[cfg(feature = "ntdll")]
         pub exec_fn_in_proc: Cell<bool>,
     }
     impl Default for FNS {
         fn default() -> Self {
             FNS {
                 get_module: Cell::new(false),
+                #[cfg(feature = "ntdll")]
                 exec_fn_in_proc: Cell::new(false),
             }
         }
     }
-
+    ///This will create a new cmd process.
+    ///You MUST bind the Process to something else than _ (even _a is apparently fine?).
     pub fn create_cmd() -> (Child, super::process::Process) {
-        let c = std::process::Command::new("cmd.exe")
+        #[cfg(not(target_pointer_width = "32"))]
+        let path = "cmd.exe";
+        #[cfg(target_pointer_width = "32")]
+        let path = format!("{}\\Sysnative\\cmd.exe", super::get_windir().unwrap());
+
+        let c = std::process::Command::new(path)
             .creation_flags(CREATE_NEW_CONSOLE)
             .spawn()
             .unwrap();
-        sleep(Duration::from_millis(50)); //Let the process init.
+        sleep(Duration::from_millis(100)); //Let the process init.
         let proc = unsafe {
             super::process::Process::from_raw_parts(
                 c.as_raw_handle() as usize,
@@ -616,6 +634,15 @@ pub mod test {
             )
         };
         (c, proc)
+    }
+
+    #[test]
+    ///Tests, that create_cmd does not panic, and that the drop will work.
+    ///The decompiler tells some interesting stuff. I would rather have it tested here.
+    fn test_create_cmd() {
+        let (mut c, _a) = create_cmd();
+        //todo: Why do I need to bind process to _a. Why can I not use _?
+        c.kill().unwrap();
     }
 
     #[test]
@@ -762,7 +789,11 @@ pub mod test {
         //other test
         {
             let r = super::get_module("ntdll.dll", &cp);
-            assert!(r.is_ok(), "normal other get_module err:{}", r.unwrap_err());
+            if cfg!(target_pointer_width = "64") || cfg!(feature = "ntdll") {
+                assert!(r.is_ok(), "normal other get_module err:{}", r.unwrap_err());
+            } else {
+                assert_eq!(r.unwrap_err(),Error::Unsupported(Some("No Ntdll support enabled. Cannot get module. Target process is x64, but we are compiled as x86.".to_string())));
+            }
         }
         #[cfg(feature = "ntdll")]
         {
@@ -781,7 +812,7 @@ pub mod test {
     #[test]
     fn find_pid() -> Result<()> {
         let exe = std::env::current_exe()?;
-        let i = Injector::find_pid(exe);
+        let i = InjectWin::find_pid(exe.as_path());
         assert!(i.is_ok(), "{}", i.unwrap_err());
         assert!(
             i?.contains(&std::process::id()),

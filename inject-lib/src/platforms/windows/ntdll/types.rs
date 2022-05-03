@@ -1,14 +1,19 @@
 #![allow(non_snake_case)] //Windows structs do not follow rust convention. Ignore warnings about names.
+
 use ntapi::ntapi_base::KPRIORITY;
 use ntapi::ntldr::LDR_DLL_LOAD_REASON;
 use ntapi::ntpsapi::GDI_HANDLE_BUFFER64;
+use std::fmt::Debug;
 use winapi::shared::basetsd::ULONG64;
 use winapi::shared::minwindef::PULONG;
 use winapi::shared::ntdef::{BOOLEAN, CHAR, NTSTATUS, UCHAR, ULONG, UNICODE_STRING64, USHORT};
+#[cfg(target_pointer_width = "32")]
+use winapi::um::winnt::PULONGLONG;
 use winapi::um::winnt::{
-    FLS_MAXIMUM_AVAILABLE, HANDLE, LARGE_INTEGER, LIST_ENTRY64, PULONGLONG, PVOID, PVOID64,
-    ULARGE_INTEGER, ULONGLONG,
+    FLS_MAXIMUM_AVAILABLE, HANDLE, LARGE_INTEGER, LIST_ENTRY64, PVOID, PVOID64, ULARGE_INTEGER,
+    ULONGLONG,
 };
+
 //This is the prototype, of the NtReadVirtualMemory function
 #[cfg(target_pointer_width = "32")]
 pub(crate) type FnNtWOW64ReadVirtualMemory64 =
@@ -40,7 +45,9 @@ macro_rules! UNION {
     );
 }
 
-STRUCT! {struct PROCESS_BASIC_INFORMATION_WOW64{
+STRUCT! {
+    #[derive(Debug)]
+    struct PROCESS_BASIC_INFORMATION_WOW64{
     ExitStatus:NTSTATUS,
     PebBaseAddress:ULONG64,
     AffinityMask:ULONG64,
@@ -60,7 +67,6 @@ STRUCT! {struct PEB64 {
     BitField: BOOLEAN,
     Mutant: ULONG64, // WOW64_POINTER
     ImageBaseAddress: ULONG64, // WOW64_POINTER
-    // Padding_Revserved: u32,
     Ldr: ULONG64, // WOW64_POINTER
     ProcessParameters: ULONG64, // WOW64_POINTER
     SubSystemData: ULONG64, // WOW64_POINTER

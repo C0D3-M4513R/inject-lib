@@ -54,11 +54,13 @@ impl Process {
     }
     ///Checks, if this process has real handle
     #[must_use]
+    #[cfg_attr(not(any(feature = "ntdll", test)), allow(unused))]
     pub fn has_real_handle(&self) -> bool {
         self.get_proc() != unsafe { GetCurrentProcess() }
     }
     ///Returns Error::IO:(ErrorKind::InvalidInput), if the process is ![has_real_handle]
     #[must_use]
+    #[cfg_attr(not(feature = "ntdll"), allow(unused))]
     pub fn err_pseudo_handle(&self) -> Result<()> {
         if !self.has_real_handle() {
             return Err(crate::error::Error::Io(std::io::Error::from(
@@ -148,6 +150,7 @@ impl Display for Process {
 
 #[cfg(test)]
 mod test {
+    use crate::Result;
     use winapi::um::winnt::PROCESS_ALL_ACCESS;
 
     #[test]
@@ -156,8 +159,10 @@ mod test {
         assert!(r.is_ok(), "{}", r.unwrap_err());
     }
     #[test]
-    fn has_real_handle() {
-        assert!(!super::Process::self_proc().has_real_handle())
+    fn has_real_handle() -> Result<()> {
+        assert!(!super::Process::self_proc().has_real_handle());
+        assert!(super::Process::new(std::process::id(), PROCESS_ALL_ACCESS)?.has_real_handle());
+        Ok(())
     }
     #[test]
     fn has_perm() {
