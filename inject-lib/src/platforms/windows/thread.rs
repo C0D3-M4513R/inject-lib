@@ -2,7 +2,7 @@ use super::macros::err;
 use crate::error::CustomError;
 use crate::Result;
 use log::{info, trace};
-use std::ops::Deref;
+use core::ops::Deref;
 use winapi::shared::minwindef::FALSE;
 use winapi::shared::ntdef::HANDLE;
 use winapi::um::synchapi::WaitForSingleObject;

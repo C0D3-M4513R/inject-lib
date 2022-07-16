@@ -3,12 +3,10 @@ mod macros;
 
 use crate::{strip_path, Inject, Injector, Result};
 use macros::check_ptr;
-use std::ffi::OsString;
+//use std::ffi::OsString;
 
 use pelite::Pod;
-use std::mem::size_of;
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
-use std::path::{Path, PathBuf};
+use core::mem::size_of;
 use winapi::shared::minwindef::{DWORD, FALSE, MAX_PATH};
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
 use winapi::um::processthreadsapi::CreateRemoteThread;
@@ -38,10 +36,16 @@ use process::Process;
 
 ///This function builds a String, from a WTF-encoded buffer.
 pub fn str_from_wide_str(v: &[u16]) -> Result<String> {
-    OsString::from_wide(v).into_string().map_err(|e| {
-        crate::warn!("Couldn't convert widestring, to string. The Buffer contained invalid non-UTF-8 characters . Buf is {:#?}.", e);
-        crate::error::Error::WTFConvert(e)
-    })
+    let tmp:Vec<Result<char,widestring::error::DecodeUtf16Error>>=widestring::decode_utf16(v.iter().map(|x|*x)).collect();
+    let mut o = String::with_capacity(v.len());
+    for i in tmp{
+        match i {
+            Err(e)=>{return Err(crate::error::Error::WTFConvert(e))},
+            Ok(v)=>{o.push(v)}
+        }
+    }
+    o.shrink_to_fit();
+    Ok(o)
 }
 
 pub struct InjectWin<'a> {
@@ -782,7 +786,7 @@ pub mod test {
     fn get_module() -> Result<()> {
         //self test
         {
-            let r = super::get_module("ntdll.dll", super::process::Process::self_proc());
+            let r = super::get_module("ntdll.dll", &super::process::Process::self_proc());
             assert!(r.is_ok(), "normal self get_module err:{}", r.unwrap_err());
         }
         let (mut c, cp) = create_cmd();

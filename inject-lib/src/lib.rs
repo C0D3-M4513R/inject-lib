@@ -25,6 +25,12 @@
 // #![feature(strict_provenance)]
 // #![warn(lossy_provenance_casts)]
 #![warn(missing_docs)]
+#![cfg_attr(not(feature = "std"),no_std)]
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
+
+
 
 ///This struct will expose certain module private functions, to actually use the api.
 ///The exact contents should be considered implementation detail.
@@ -37,9 +43,8 @@ pub struct Injector<'a> {
     pub pid: u32,
 }
 
-pub(crate) type Result<T> = std::result::Result<T, error::Error>;
+pub(crate) type Result<T,V=error::Error> = core::result::Result<T, V>;
 pub(crate) use log::{debug, error, info, trace, warn};
-use std::path::{Path, PathBuf};
 
 ///Holds all error types
 pub mod error;
@@ -88,10 +93,11 @@ impl<'a> Default for Injector<'a> {
         Self::new("", 0)
     }
 }
+#[cfg(feature = "std")]
 ///This takes a string, and returns only the last path element
 ///Since this uses rust builtins, it should "just work".
 pub fn strip_path(dll: &str) -> Result<String> {
-    let pb = PathBuf::from(dll);
+    let pb = std::path::PathBuf::from(dll);
     match pb.file_name().and_then(|x| x.to_str()) {
         None => Err(error::Error::Io(std::io::Error::from(
             std::io::ErrorKind::Unsupported,
@@ -100,6 +106,7 @@ pub fn strip_path(dll: &str) -> Result<String> {
     }
 }
 
+#[cfg(feature = "alloc")]
 ///This truncates all 0 from the end of a Vec
 ///This will keep other 0 entries in the Vec perfectly intact.
 ///This has a worst case performance of o(n).

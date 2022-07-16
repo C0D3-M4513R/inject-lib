@@ -14,7 +14,8 @@ pub enum Error {
     ///(Because typically NTDLL calls don't succeed, even if the return type is just a Warning)
     Ntdll(i32),
     ///Gets returned, if a Wide String cannot be converted into a regular string.
-    WTFConvert(OsString), //Windows u16 string stuff
+    WTFConvert(widestring::error::DecodeUtf16Error), //Windows u16 string stuff
+    #[cfg(feature = "std")]
     ///Passes errors from std::io.
     Io(std::io::Error),
     #[cfg(target_family = "windows")]
@@ -52,7 +53,7 @@ impl From<CustomError> for Error {
         Error::InjectLib(x)
     }
 }
-
+#[cfg(feature = "std")]
 impl From<std::io::Error> for Error {
     ///Converts a std::Io::Error into a Error for use in this crate
     fn from(e: std::io::Error) -> Self {
@@ -81,6 +82,7 @@ impl Error {
             _ => None,
         }
     }
+    #[cfg(feature = "std")]
     ///Gets the contents of Error::Io, if self holds data of that type
     fn get_io(&self) -> Option<&std::io::Error> {
         match self {

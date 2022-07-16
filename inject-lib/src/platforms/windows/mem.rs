@@ -1,5 +1,5 @@
 use crate::Result;
-use std::fmt::{Display, Formatter};
+use core::fmt::{Display, Formatter};
 use winapi::shared::minwindef::{FALSE, LPCVOID, LPVOID};
 
 use super::macros::err;
@@ -169,7 +169,7 @@ mod test {
 
     #[test]
     fn zero_size_page() {
-        let proc = super::super::process::Process::self_proc();
+        let proc = &super::super::process::Process::self_proc();
         let m = super::MemPage::new(proc, 0, false);
         assert!(
             m.is_err(),
@@ -179,7 +179,7 @@ mod test {
 
     #[test]
     fn check_proc() -> Result<()> {
-        let proc = super::super::process::Process::self_proc();
+        let proc = &super::super::process::Process::self_proc();
         let m = super::MemPage::new(proc, 1, false)?;
         assert!(m.check_proc(proc));
         Ok(())
@@ -188,7 +188,7 @@ mod test {
     #[test]
     fn new_and_write() -> Result<()> {
         let buf: Vec<u8> = (0..255).collect();
-        let proc = super::super::process::Process::self_proc();
+        let proc = &super::super::process::Process::self_proc();
         //write mem
         let mut m = super::MemPage::new(proc, buf.len(), false)?;
         let w = m.write(buf.as_slice())?;

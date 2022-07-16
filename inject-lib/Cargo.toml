@@ -8,7 +8,7 @@ homepage = "https://github.com/C0D3-M4513R/inject-lib"
 documentation = "https://docs.rs/inject-lib"
 authors = ["C0D3 M4513R <28912031+C0D3-M4513R@users.noreply.github.com>"]
 edition = "2021"
-license = "LGPL-2.1-only"
+license = "LGPL-2.1-only or MIT"
 categories = []
 keywords = ["dll-injection", "dll", "injector", "windows"]
 
@@ -37,11 +37,12 @@ features=[
 
 [target.'cfg(target_family="windows")'.dependencies]
 ntapi={version="0.3",optional=true}#Types
-pelite = "0.9" #to read/parse dll information. #todo: maybe replace with exe-rs?
+pelite ={version="0.9", default-features=false, features=["derive_pod"]} #to read/parse dll information. #todo: maybe replace with exe-rs?
 
 [dependencies]
 log = "0.4"
-once_cell="1.10"
+once_cell={version="1.10",default-features=false}
+widestring = {version="1",default-features=false}
 
 [dev-dependencies]
 simple_logger = {version = "2.1.0",default-features=false}
@@ -51,6 +52,8 @@ default=[]
 nightly=[]
 ntdll=["ntapi"]
 x86tox64=["ntdll"]
+std=["pelite/mmap","once_cell/std","widestring/std","alloc"]
+alloc=["once_cell/alloc","widestring/alloc"]
 
 [package.metadata.docs.rs]
 targets = ["x86_64-pc-windows-msvc", "i686-pc-windows-msvc"]
