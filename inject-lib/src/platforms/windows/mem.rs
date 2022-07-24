@@ -2,6 +2,8 @@ use crate::Result;
 use core::fmt::{Display, Formatter};
 use winapi::shared::minwindef::{FALSE, LPCVOID, LPVOID};
 
+use alloc::vec::Vec;
+
 use super::macros::err;
 use super::process::Process;
 use winapi::um::memoryapi::{ReadProcessMemory, VirtualAllocEx, VirtualFreeEx, WriteProcessMemory};
@@ -37,7 +39,7 @@ impl<'a> MemPage<'a> {
         let addr = unsafe {
             VirtualAllocEx(
                 proc.get_proc(),
-                std::ptr::null_mut(),
+                core::ptr::null_mut(),
                 size,
                 MEM_COMMIT | MEM_RESERVE,
                 if exec {
@@ -48,7 +50,7 @@ impl<'a> MemPage<'a> {
             )
         };
         if addr.is_null() {
-            return Err(err(format!(
+            return Err(err(alloc::format!(
                 "VirtualAllocEx failed to allocate {}{} bytes on process {:x}",
                 size,
                 if exec { " executable" } else { "" },
@@ -138,7 +140,7 @@ impl<'a> MemPage<'a> {
     }
 }
 impl<'a> Display for MemPage<'a> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
             "(proc:{:x}, addr:{:x}, size:{:x}, exec:{})",

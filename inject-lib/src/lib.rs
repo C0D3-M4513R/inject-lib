@@ -28,10 +28,11 @@
 #![cfg_attr(not(feature = "std"),no_std)]
 #[cfg(feature = "alloc")]
 extern crate alloc;
+#[cfg(not(feature = "alloc"))]
+compile_error!("inject_lib doesn't yet support no alloc environments");
+extern crate core;
 
-
-
-
+use alloc::vec::Vec;
 ///This struct will expose certain module private functions, to actually use the api.
 ///The exact contents should be considered implementation detail.
 #[derive(Debug, Clone)]
@@ -57,7 +58,13 @@ pub trait Inject {
     fn eject(&self) -> Result<()>;
     ///This Function will find all currently processes, with a given name.
     ///Even if no processes are found, an empty Vector should return.
-    fn find_pid<P: AsRef<Path>>(name: P) -> Result<Vec<u32>>;
+    fn find_pid(name: Data) -> Result<Vec<u32>>;
+}
+
+pub enum Data<'a>{
+    Str(&'a str),
+    #[cfg(feature = "std")]
+    Path(&'a std::path::Path)
 }
 
 impl<'a> Injector<'a> {
@@ -83,7 +90,7 @@ impl<'a> Injector<'a> {
     #[cfg(target_family = "windows")]
     ///This Function will find all currently processes, with a given name.
     ///Even if no processes are found, an empty Vector should return.
-    pub fn find_pid<P: AsRef<Path>>(name: P) -> Result<Vec<u32>> {
+    pub fn find_pid(name: Data) -> Result<Vec<u32>> {
         platforms::windows::InjectWin::find_pid(name)
     }
 }
@@ -106,16 +113,25 @@ pub fn strip_path(dll: &str) -> Result<String> {
     }
 }
 
-#[cfg(feature = "alloc")]
 ///This truncates all 0 from the end of a Vec
 ///This will keep other 0 entries in the Vec perfectly intact.
 ///This has a worst case performance of o(n).
-//todo: improve performance
-pub fn trim_wide_str(mut v: Vec<u16>) -> Vec<u16> {
-    while v.last().map(|x| *x) == Some(0) {
-        v.pop();
-    }
-    return v;
+///if fast==true, the data MUST only contain NULL-values at the end of the string O(log n)
+///else O(n)
+pub fn trim_wide_str<const fast:bool>(v: &[u16]) -> &[u16] {
+    let i= {
+        if fast{
+            v.partition_point(|x|*x!=0)
+        }else{
+            let mut len=v.len();
+            while v.last().map(|x| *x) == Some(0) {
+                len-=1;
+            }
+            len
+        }
+    };
+    let (out,_) = v.split_at(i);
+    return out;
 }
 
 #[cfg(test)]
@@ -126,11 +142,12 @@ mod test {
     use crate::Result;
     #[test]
     fn trim_vec() {
-        let buf: Vec<u16> = (0..u16::MAX).collect();
+        let buf: Vec<u16> = (1..u16::MAX).collect();
         let mut buf2 = buf.clone();
         buf2.append(&mut [0u16; 100].to_vec());
 
-        assert_eq!(super::trim_wide_str(buf2), buf);
+        assert_eq!(super::trim_wide_str::<true>(buf2.as_slice()), buf);
+        assert_eq!(super::trim_wide_str::<false>(buf2.as_slice()), buf);
     }
 
     #[test]

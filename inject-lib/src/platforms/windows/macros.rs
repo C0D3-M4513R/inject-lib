@@ -1,8 +1,9 @@
 #![cfg(target_os = "windows")]
 
 use crate::error::Error;
-use std::fmt::Display;
+use core::fmt::Display;
 use winapi::um::errhandlingapi::GetLastError;
+use alloc::string::ToString;
 
 ///Calls a closure
 #[doc(hidden)]
@@ -17,7 +18,7 @@ macro_rules! check_ptr {
             #[allow(unused_unsafe)]
             let _tmp = unsafe{$name($($args),*)};
             if $crate::platforms::windows::macros::__call__(_tmp,$predicate){
-                return Err($crate::error::Error::from(std::stringify!($name)));
+                return Err($crate::error::Error::from(core::stringify!($name)));
             } else{
                _tmp
             }

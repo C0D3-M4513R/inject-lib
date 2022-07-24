@@ -8,6 +8,7 @@ use winapi::shared::ntdef::HANDLE;
 use winapi::um::synchapi::WaitForSingleObject;
 use winapi::um::winbase::INFINITE;
 
+use alloc::string::ToString;
 ///This class represents a Thread handle.
 ///It exists mostly, to have a destructor for a Handle.
 #[repr(transparent)]
@@ -61,7 +62,7 @@ impl Drop for Thread {
         trace!("Cleaning Thread Handle");
         if unsafe { winapi::um::handleapi::CloseHandle(self.thread) } == FALSE {
             log::error!("Error during cleanup!");
-            err::<String>("CloseHandle of Thread".to_string());
+            err::<alloc::string::String>("CloseHandle of Thread".to_string());
         }
     }
 }

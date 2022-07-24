@@ -1,7 +1,6 @@
 ///This module contains all error Types.
-use std::ffi::OsString;
-use std::fmt::{Display, Formatter};
-
+use core::fmt::{Display, Formatter};
+use alloc::string::{String,ToString};
 #[derive(Debug)]
 ///This is the error type for this crate
 pub enum Error {
@@ -76,7 +75,7 @@ impl Error {
         }
     }
     ///Gets the contents of Error::WTFConvert, if self holds data of that type
-    fn get_wtfconvert(&self) -> Option<&OsString> {
+    fn get_wtfconvert(&self) -> Option<&widestring::error::DecodeUtf16Error> {
         match self {
             Error::WTFConvert(x) => Some(x),
             _ => None,
@@ -136,6 +135,7 @@ impl PartialEq<Self> for Error {
 #[cfg(target_family = "windows")]
 mod windows {
     use crate::error::Error;
+    use alloc::string::String;
     use winapi::um::errhandlingapi::GetLastError;
 
     impl From<pelite::Error> for Error {
@@ -156,7 +156,7 @@ mod windows {
 }
 
 impl Display for Error {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         match self {
             Error::Winapi(s, n) => write!(f, "Winapi error:{} failed with code {}", s, n),
             Error::Ntdll(n) => write!(f, "Ntdll({:#x})", n),
@@ -175,7 +175,7 @@ impl Display for Error {
 }
 
 impl Display for CustomError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         match self {
             CustomError::NoViableInjector=>write!(f,"Could not find a viable injection method for the circumstances"),
             CustomError::WaitForSingleObject(x)=>write!(f,"WaitForSingleObject return code {:#x}",x),
@@ -215,7 +215,7 @@ impl Ntdll {
     }
 }
 impl Display for Ntdll {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         match self {
             Ntdll::Error(v) => write!(f, "Ntdll::Error({:#x})", v),
             Ntdll::Warning(v) => write!(f, "Ntdll::Warning({:#x})", v),

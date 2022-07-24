@@ -41,14 +41,14 @@ pelite ={version="0.9", default-features=false, features=["derive_pod"]} #to rea
 
 [dependencies]
 log = "0.4"
-once_cell={version="1.10",default-features=false}
+once_cell={version="1.10",default-features=false,features=["race"]}
 widestring = {version="1",default-features=false}
 
 [dev-dependencies]
 simple_logger = {version = "2.1.0",default-features=false}
 
 [features]
-default=[]
+default=["alloc"]
 nightly=[]
 ntdll=["ntapi"]
 x86tox64=["ntdll"]

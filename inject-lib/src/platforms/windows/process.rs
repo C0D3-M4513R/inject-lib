@@ -131,13 +131,13 @@ impl Drop for Process {
         crate::trace!("Cleaning Process Handle");
         if unsafe { CloseHandle(self.proc as HANDLE) } == FALSE {
             crate::error!("Error during Process Handle cleanup!");
-            err::<String>("CloseHandle of ".to_string() + std::stringify!($name));
+            err::<alloc::string::String>(alloc::string::String::from("CloseHandle of ") + core::stringify!($name));
         }
     }
 }
 
 impl Display for Process {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
             "(proc:{:x},pid: {},perms:{:x}, wow:{:#?})",

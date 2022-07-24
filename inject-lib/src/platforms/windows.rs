@@ -1,9 +1,11 @@
 #![cfg(windows)]
 mod macros;
 
-use crate::{strip_path, Inject, Injector, Result};
+use crate::{Inject, Injector, Result};
 use macros::check_ptr;
-//use std::ffi::OsString;
+
+use alloc::string::{String,ToString};
+use alloc::vec::Vec;
 
 use pelite::Pod;
 use core::mem::size_of;
@@ -29,6 +31,7 @@ mod thread;
 
 #[cfg(feature = "ntdll")]
 use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
+use winapi::um::errhandlingapi::GetLastError;
 
 use crate::error::Error;
 use mem::MemPage;
@@ -46,6 +49,50 @@ pub fn str_from_wide_str(v: &[u16]) -> Result<String> {
     }
     o.shrink_to_fit();
     Ok(o)
+}
+
+///This function builds a String, from a WTF-encoded buffer.
+pub fn wide_str_from_str(v: &str) -> Vec<u16> {
+    let tmp:Vec<u16>=widestring::encode_utf16(v.chars()).collect();
+    //mp.shrink_to_fit();
+    tmp
+}
+
+fn canonicalize(p:crate::Data)->Result<String>{
+    match p{
+        #[cfg(not(feature = "std"))]
+        crate::Data::Str(s)=>{
+            let file=wide_str_from_str(s);
+            file.push(0);
+            let mut out = Vec::<u16>::with_capacity(0);
+            //get the length required for the buffer.
+            let s = unsafe{winapi::um::fileapi::GetFullPathNameW(file.as_ptr(),out.len() as u32,out.as_mut_ptr(),core::ptr::null_mut())};
+            if s==0{
+                return Err(crate::error::Error::Winapi("Error whilst calling GetFullPathNameW-1 whilst in canonicalize.".to_string(),unsafe{GetLastError()}));
+            }
+            //add buffer
+            out.reserve_exact(s as usize);
+            //actally get path
+            let s = unsafe{winapi::um::fileapi::GetFullPathNameW(file.as_ptr(),out.len() as u32,out.as_mut_ptr(),core::ptr::null_mut())};
+            if s==0{
+                return Err(crate::error::Error::Winapi("Error whilst calling GetFullPathNameW-2 whilst in canonicalize.".to_string(),unsafe{GetLastError()}));
+            }
+            unsafe {file.set_len(s as usize);}
+
+            return str_from_wide_str(file.as_slice());
+        },
+        #[cfg(feature = "std")]
+        crate::Data::Str(s)=>{
+            return canonicalize(crate::Data::Path(&std::path::Path::new(s)))
+        },
+        #[cfg(feature = "std")]
+        crate::Data::Path(p)=>{
+            use std::os::windows::ffi::OsStrExt;
+            let s = std::fs::canonicalize(p)?;
+            let tmp:Vec<u16>=s.as_os_str().encode_wide().collect();
+            return str_from_wide_str(tmp.as_slice())
+        }
+    }
 }
 
 pub struct InjectWin<'a> {
@@ -66,18 +113,18 @@ impl<'a> Inject for InjectWin<'a> {
                 | PROCESS_QUERY_INFORMATION,
         )?;
         //Is the dll already injected?
-        if get_module(strip_path(self.inj.dll)?.as_str(), &proc).is_ok() {
+        if get_module(crate::strip_path(self.inj.dll)?.as_str(), &proc).is_ok() {
             return Err(Error::Unsupported(Some("dll already injected".to_string())));
         }
 
         //Prepare Argument for LoadLibraryW
         //scope here, so Vec will get deleted after this
         let mem = {
-            let full_path: PathBuf = std::fs::canonicalize(self.inj.dll)?;
-            let path: Vec<u16> = full_path.as_os_str().encode_wide().chain(Some(0)).collect();
+            let mut full_path = canonicalize(crate::Data::Str(self.inj.dll))?;
+            full_path.push(0 as char);
             let mut mempage =
-                mem::MemPage::new(&proc, path.len() * core::mem::size_of::<u16>(), false)?;
-            mempage.write(path.as_bytes())?;
+                mem::MemPage::new(&proc, full_path.len() * core::mem::size_of::<u16>(), false)?;
+            mempage.write(full_path.as_bytes())?;
             mempage
         };
         self.exec_fn_in_proc(&proc, "LoadLibraryW", mem)
@@ -100,7 +147,7 @@ impl<'a> Inject for InjectWin<'a> {
             )));
         }
 
-        let name = strip_path(self.inj.dll)?;
+        let name = crate::strip_path(self.inj.dll)?;
         // let (_path, base) = get_module(name.as_str(), &proc)?;
         let handle = get_module_in_pid(
             self.inj.pid,
@@ -139,13 +186,21 @@ impl<'a> Inject for InjectWin<'a> {
 
     ///This Function will find all currently processes, with a given name.
     ///Even if no processes are found, an empty Vector should return.
-    fn find_pid<P: AsRef<Path>>(name: P) -> Result<Vec<u32>> {
-        let name = name.as_ref();
+    fn find_pid(name: crate::Data) -> Result<Vec<u32>> {
         Self::find_pid_selector(|p| {
-            return match str_from_wide_str(crate::trim_wide_str(p.szExeFile.to_vec()).as_slice()) {
+            return match str_from_wide_str(crate::trim_wide_str::<true>(&p.szExeFile)) {
                 Ok(str) => {
-                    crate::debug!("Checking {} against {}", str, name.to_string_lossy());
-                    return name.ends_with(str.as_str());
+                    match name{
+                        crate::Data::Str(s)=>{
+                            crate::debug!("Checking {} against {}", str, s);
+                            return s.ends_with(str.as_str());
+                        }
+                        #[cfg(feature="std")]
+                        crate::Data::Path(p)=>{
+                            crate::debug!("Checking {} against {}", str, p.to_string_lossy());
+                            return p.ends_with(str.as_str());
+                        }
+                    }
                 }
                 Err(e) => {
                     crate::warn!("Skipping check of process. Can't construct string, to compare against. Err:{:#?}",e);
@@ -231,7 +286,7 @@ impl<'a> InjectWin<'a> {
         }
 
         let entry_point = {
-            let (path, base) = get_module("KERNEL32.DLL", &proc)?;
+            let (path, base) = get_module(crate::Data::Str("KERNEL32.DLL"), &proc)?;
             base + get_dll_export(entry_fn, path)? as u64
         };
         crate::info!(
@@ -314,9 +369,9 @@ impl<'a> InjectWin<'a> {
             let thread = unsafe {
                 thread::Thread::new(CreateRemoteThread(
                     proc.get_proc(),
-                    std::ptr::null_mut(),
+                    core::ptr::null_mut(),
                     0,
-                    Some(std::mem::transmute(entry_point as usize)),
+                    Some(core::mem::transmute(entry_point as usize)),
                     mem.get_address(),
                     0,
                     &mut thread_id as *mut u32,
@@ -433,9 +488,9 @@ where
         th32ProcessID: 0, //The identifier of the process whose modules are to be examined.
         GlblcntUsage: 0, //The load count of the module, which is not generally meaningful, and usually equal to 0xFFFF.
         ProccntUsage: 0, //The load count of the module (same as GlblcntUsage), which is not generally meaningful, and usually equal to 0xFFFF.
-        modBaseAddr: std::ptr::null_mut(), //The base address of the module in the context of the owning process.
+        modBaseAddr: core::ptr::null_mut(), //The base address of the module in the context of the owning process.
         modBaseSize: 0,                    //The size of the module, in bytes.
-        hModule: std::ptr::null_mut(), //A handle to the module in the context of the owning process.
+        hModule: core::ptr::null_mut(), //A handle to the module in the context of the owning process.
         szModule: [0; MAX_MODULE_NAME32 + 1], //The module name.
         szExePath: [0; MAX_PATH],      //The module path.
     };
@@ -458,16 +513,16 @@ where
 }
 ///This gets the directory, where windows files reside. Usually C:\Windows
 fn get_windir<'a>() -> Result<&'a String> {
-    static WINDIR: once_cell::sync::OnceCell<String> = once_cell::sync::OnceCell::new();
+    static WINDIR: once_cell::race::OnceBox<String> = once_cell::race::OnceBox::new();
     let str = WINDIR.get_or_try_init(||{
-		let i=check_ptr!(GetSystemWindowsDirectoryW(std::ptr::null_mut(),0),|v|v==0);
+		let i=check_ptr!(GetSystemWindowsDirectoryW(core::ptr::null_mut(),0),|v|v==0);
 		let mut str_buf:Vec<u16> = Vec::with_capacity( i as usize);
 		let i2=check_ptr!(GetSystemWindowsDirectoryW(str_buf.as_mut_ptr(),i),|v|v==0);
         assert!(i2<=i,"GetSystemWindowsDirectoryA says, that {} bytes are needed, but then changed it's mind. Now {} bytes are needed.",i,i2);
 		unsafe{str_buf.set_len(i2 as usize)};
 		let string = str_from_wide_str(str_buf.as_slice())?;
         crate::debug!("Windir is {},{},{}",string,i,i2);
-		Ok(string)
+		Ok(alloc::boxed::Box::new(string))
 	})?;
     crate::debug!("Windir is '{}'", str);
     Ok(str)
@@ -478,12 +533,12 @@ fn get_windir<'a>() -> Result<&'a String> {
 ///name specifies, what module to look for.
 ///f processes the other input from other functions
 //todo: does this bring a performance benefit?
-fn predicate<T, F, C>(f: T, cmp: C) -> impl Fn(F, Vec<u16>) -> Option<(String, u64)>
+fn predicate<T, F, C>(f: T, cmp: C) -> impl Fn(F, &[u16]) -> Option<(String, u64)>
 where
     T: Fn(F) -> u64,
     C: Fn(&String) -> bool,
 {
-    move |i2, v| match str_from_wide_str(crate::trim_wide_str(v).as_slice()) {
+    move |i2, v| match str_from_wide_str(crate::trim_wide_str::<true>(v)) {
         Ok(s) => {
             if cmp(&s) {
                 Some((s, f(i2)))
@@ -496,16 +551,40 @@ where
 }
 ///Returns a function, which compares a &str against a name
 //todo: make the second function call better
-fn cmp<P: AsRef<Path>>(name: P) -> impl Fn(&dyn AsRef<Path>) -> bool {
+fn cmp<'a>(name: crate::Data<'a>) -> impl Fn(crate::Data<'_>) -> bool +'a {
     move |s| {
-        return name.as_ref().ends_with(&s) || s.as_ref().ends_with(&name);
+        return match name{
+            crate::Data::Str(s2)=>{
+                match s{
+                    crate::Data::Str(s)=>{s2.ends_with(s) || s.ends_with(s2)}
+                    #[cfg(feature = "std")]
+                    crate::Data::Path(p)=>{
+                        let p1=std::path::Path::new(s2);
+                        p1.ends_with(p) || p.ends_with(p1)
+                    }
+                }
+            }
+            #[cfg(feature = "std")]
+            crate::Data::Path(p2)=>{
+                match s{
+                    crate::Data::Str(s)=>{
+                        let p1=std::path::Path::new(s);
+                        p1.ends_with(p2) || p2.ends_with(p1)
+                    }
+                    #[cfg(feature = "std")]
+                    crate::Data::Path(p)=>{
+                        p.ends_with(p2) || p2.ends_with(p)
+                    }
+                }
+            }
+        };
     }
 }
 
 ///Gets the base address of where a dll is loaded within a process.
 ///The dll is identified by name. name is checked against the whole file name.
 ///if the process has a pseudo-handle, the ntdll methods will not run.
-fn get_module<P: AsRef<Path>>(name: P, proc: &Process) -> Result<(String, u64)> {
+fn get_module(name: crate::Data, proc: &Process) -> Result<(String, u64)> {
     let cmp = cmp(name);
     let ntdll = !process::Process::self_proc().is_under_wow()? || proc.is_under_wow()?;
     #[cfg(test)]
@@ -513,10 +592,10 @@ fn get_module<P: AsRef<Path>>(name: P, proc: &Process) -> Result<(String, u64)> 
     if ntdll {
         match get_module_in_pid(
             proc.get_pid(),
-            |m| {
-                predicate(|m: &MODULEENTRY32W| m.modBaseAddr as u64, |x| (&cmp)(&x))(
+            |m| unsafe {
+                predicate(|m: &MODULEENTRY32W| m.modBaseAddr as u64, |x| (&cmp)(crate::Data::Str(x.as_str())) )(
                     m,
-                    m.szExePath.to_vec(),
+                    &m.szExePath
                 )
             },
             None,
@@ -539,7 +618,8 @@ fn get_module<P: AsRef<Path>>(name: P, proc: &Process) -> Result<(String, u64)> 
     {
         crate::info!("Trying get_module_in_proc as fallback method.");
         unsafe {
-            return ntdll::NTDLL::new()?.get_module_in_proc(
+            let ntdll=ntdll::NTDLL::new()?;
+            return ntdll.get_module_in_proc(
                 proc,
                 predicate(
                     |w: pelite::Wrap<LDR_DATA_TABLE_ENTRY32, ntdll::LDR_DATA_TABLE_ENTRY64>| match w
@@ -547,7 +627,7 @@ fn get_module<P: AsRef<Path>>(name: P, proc: &Process) -> Result<(String, u64)> 
                         pelite::Wrap::T32(w) => w.DllBase as u64,
                         pelite::Wrap::T64(w) => w.DllBase as u64,
                     },
-                    |x| (&cmp)(&x),
+                    |x| (&cmp)(crate::Data::Str(x.as_str())) ,
                 ),
             );
         }
@@ -569,7 +649,7 @@ fn get_dll_export(name: &str, path: String) -> Result<u32> {
         path
     };
     debug_assert!(
-        std::fs::canonicalize(&path).is_ok(),
+        canonicalize(crate::Data::Str(path.as_str())).is_ok(),
         "parsing {} failed",
         path,
     );
@@ -690,28 +770,28 @@ pub mod test {
     fn cmp() {
         //Simple case
         {
-            let f = super::cmp("test");
-            assert!(f(&"test"));
-            assert!(!f(&"not test"));
-            let f = super::cmp("KERNEL32.DLL");
-            assert!(f(&&"C:\\Windows\\System32\\KERNEL32.DLL".to_string()));
-            let f = super::cmp("ntdll.dll");
-            assert!(f(&&"C:\\Windows\\SYSTEM32\\ntdll.dll".to_string()));
+            let f = super::cmp(crate::Data::Str("test"));
+            assert!(f(crate::Data::Str("test")));
+            assert!(!f(crate::Data::Str("not test")));
+            let f = super::cmp(crate::Data::Str("KERNEL32.DLL"));
+            assert!(f(crate::Data::Str("C:\\Windows\\System32\\KERNEL32.DLL")));
+            let f = super::cmp(crate::Data::Str("ntdll.dll"));
+            assert!(f(crate::Data::Str("C:\\Windows\\SYSTEM32\\ntdll.dll")));
         }
         //complicated paths
         {
             let f = vec![
-                super::cmp("C:\\this\\is\\a\\test\\path\\with\\a\\dir\\at\\the\\end\\"),
-                super::cmp("C:\\this\\is\\a\\test\\path\\with\\a\\dir\\at\\the\\end"),
-                super::cmp("C:/this/is/a/test/path/with/a/dir/at/the/end/"),
-                super::cmp("C:/this/is/a/test/path/with/a/dir/at/the/end"),
+                super::cmp(crate::Data::Str("C:\\this\\is\\a\\test\\path\\with\\a\\dir\\at\\the\\end\\")),
+                super::cmp(crate::Data::Str("C:\\this\\is\\a\\test\\path\\with\\a\\dir\\at\\the\\end")),
+                super::cmp(crate::Data::Str("C:/this/is/a/test/path/with/a/dir/at/the/end/")),
+                super::cmp(crate::Data::Str("C:/this/is/a/test/path/with/a/dir/at/the/end")),
             ];
             for f in f {
-                assert!(f(&"end"));
-                assert!(f(&"the\\end"));
-                assert!(f(&"the/end"));
-                assert!(f(&"at/the\\end"));
-                assert!(f(&"at\\the/end"));
+                assert!(f(crate::Data::Str("end")));
+                assert!(f(crate::Data::Str("the\\end")));
+                assert!(f(crate::Data::Str("the/end")));
+                assert!(f(crate::Data::Str("at/the\\end")));
+                assert!(f(crate::Data::Str("at\\the/end")));
             }
         }
     }
@@ -736,10 +816,10 @@ pub mod test {
     #[test]
     fn predicate() {
         //If nothing matches, we should get NONE back
-        assert_eq!(super::predicate(|_| 0, |_| false)((), vec![]), None);
+        assert_eq!(super::predicate(|_| 0, |_| false)((), &[]), None);
         //If something matches, we should get a result
         assert_eq!(
-            super::predicate(|_| 0, |_| true)((), vec![]),
+            super::predicate(|_| 0, |_| true)((), &[]),
             Some(("".to_string(), 0))
         );
     }
@@ -752,8 +832,8 @@ pub mod test {
                 |m| {
                     super::predicate(
                         |m: &MODULEENTRY32W| m.modBaseAddr as u64,
-                        |x| super::cmp("ntdll.dll")(&x),
-                    )(m, m.szModule.to_vec())
+                        |x| super::cmp(crate::Data::Str("ntdll.dll"))(crate::Data::Str(x.as_str())),
+                    )(m, &m.szModule)
                 },
                 None,
             )
@@ -803,8 +883,8 @@ pub mod test {
         {
             let proc = super::process::Process::new(std::process::id(), PROCESS_ALL_ACCESS)?;
             FNS_M.with(|x| x.get_module.set(true));
-            let r = super::get_module("KERNEL32.DLL", &proc);
-            let r1 = super::get_module("KERNEL32.DLL", &cp);
+            let r = super::get_module(crate::Data::Str("KERNEL32.DLL"), &proc);
+            let r1 = super::get_module(crate::Data::Str("KERNEL32.DLL"), &cp);
             FNS_M.with(|x| x.get_module.set(false));
             assert!(r.is_ok(), "ntdll self get_module:{}", r.unwrap_err());
             assert!(r1.is_ok(), "ntdll other get_module:{}", r.unwrap_err());
@@ -816,7 +896,7 @@ pub mod test {
     #[test]
     fn find_pid() -> Result<()> {
         let exe = std::env::current_exe()?;
-        let i = InjectWin::find_pid(exe.as_path());
+        let i = InjectWin::find_pid(crate::Data::Path(&exe.as_path()));
         assert!(i.is_ok(), "{}", i.unwrap_err());
         assert!(
             i?.contains(&std::process::id()),

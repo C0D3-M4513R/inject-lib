@@ -9,6 +9,8 @@ use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
 use pelite::Wrap;
 use core::mem::MaybeUninit;
 use core::ops::Shl;
+use std::ptr::slice_from_raw_parts;
+use widestring::U16CString;
 pub use types::LDR_DATA_TABLE_ENTRY64;
 use winapi::shared::minwindef::{HMODULE, PULONG, ULONG};
 use winapi::shared::ntdef::{NTSTATUS, PVOID};
@@ -29,7 +31,8 @@ impl NTDLL {
     ///This class employs the Singleton principle.
     pub(crate) fn new() -> Result<&'static Self> {
         static INST: once_cell::race::OnceBox<NTDLL> = once_cell::race::OnceBox::new();
-        const NTDLL:&widestring::U16CStr = widestring::u16cstr!("NTDLL.dll\0");
+        const NTDLL:&widestring::U16CStr = widestring::u16cstr!("NTDLL.dll");
+        debug_assert!(NTDLL.as_slice().ends_with(&[0]));
         INST.get_or_try_init(|| {
             let handle = check_ptr!(LoadLibraryW(NTDLL.as_ptr())) as usize;
             Ok(Box::new(NTDLL { handle }))
@@ -85,7 +88,7 @@ impl NTDLL {
     where
         F: Fn(
             Wrap<ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32, types::LDR_DATA_TABLE_ENTRY64>,
-            Vec<u16>,
+            &[u16],
         ) -> Option<R>,
     {
         proc.err_pseudo_handle()?;
@@ -192,20 +195,27 @@ impl NTDLL {
                     dll_win_string_buffer,
                     (dll_win_string_length) as u32,
                 )?;
+
                 let dll_path_old = dll_path_buf.as_slice();
-                let mut dll_path = Vec::with_capacity(((dll_win_string_length >> 1) + 1) as usize);
-                let mut i = 0;
-                while i < dll_path_buf.len() >> 1 {
-                    dll_path
-                        .push((dll_path_old[2 * i + 1] as u16).shl(8) | dll_path_old[2 * i] as u16);
-                    i += 1;
-                }
+                //safety:
+                //t is valid & size_of(u8)=size_of(u16)/2
+                //
+                //we do not care about the last potentially byte, that we throw away here, because dll_path_buf was already a WTF string.
+                let dll_path = core::slice::from_raw_parts(dll_path_old.as_ptr() as *const u16, dll_path_old.len()/2);
+                // let dll_path_old = dll_path_buf.as_slice();
+                // let mut dll_path = Vec::with_capacity(((dll_win_string_length >> 1) + 1) as usize);
+                // let mut i = 0;
+                // while i < dll_path_buf.len() >> 1 {
+                //     dll_path
+                //         .push((dll_path_old[2 * i + 1] as u16).shl(8) | dll_path_old[2 * i] as u16);
+                //     i += 1;
+                // }
 
                 let addr = match ldr_entry_data {
                     Wrap::T32(v) => v.DllBase as u64,
                     pelite::Wrap::T64(v) => v.DllBase as u64,
                 };
-                match str_from_wide_str(dll_path.as_slice()) {
+                match str_from_wide_str(dll_path) {
                     Ok(v) => {
                         crate::debug!("dll_name is {},{:x}", v, addr);
                     }
