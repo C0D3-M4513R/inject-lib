@@ -1,7 +1,7 @@
 #![cfg(windows)]
 mod macros;
 
-use crate::{Data, Inject, Injector, Result};
+use crate::{Data, Inject, Injector, Result, cmp};
 use macros::check_ptr;
 
 use alloc::string::{String,ToString};
@@ -31,6 +31,8 @@ mod thread;
 
 #[cfg(feature = "ntdll")]
 use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
+use winapi::um::errhandlingapi::GetLastError;
+use winapi::um::winbase::GetFileInformationByHandleEx;
 
 use crate::error::Error;
 use mem::MemPage;
@@ -57,36 +59,101 @@ pub fn wide_str_from_str(v: &str) -> Vec<u16> {
     tmp
 }
 
-fn canonicalize(p:&crate::Data)->Result<(String,Option<String>)>{
+fn canonicalize(p:&crate::Data)->Result<(String,Option<String>)>
+{
     match p{
         #[cfg(not(feature = "std"))]
         crate::Data::Str(s)=>{
+            use winapi::um::fileapi::{CreateFileW,GetFinalPathNameByHandleW};
+            //Encode file-name
             let mut file=wide_str_from_str(s);
             file.push(0);
-            let mut out = Vec::<u16>::with_capacity(0);
-            let mut lps:*mut u16 = core::ptr::null_mut();
-            //get the length required for the buffer.
-            let s = unsafe{winapi::um::fileapi::GetFullPathNameW(file.as_ptr(),out.len() as u32,out.as_mut_ptr(),&mut lps as *mut *mut u16)};
-            if s==0{
-                return Err(crate::error::Error::from("Error whilst calling GetFullPathNameW-1 whilst in canonicalize."));
+            //Get File/Directory Handle
+            let r = unsafe{CreateFileW(
+                file.as_ptr(),
+                0,
+                winapi::um::winnt::FILE_SHARE_READ|winapi::um::winnt::FILE_SHARE_WRITE|winapi::um::winnt::FILE_SHARE_DELETE,
+                core::ptr::null_mut(),
+                winapi::um::fileapi::OPEN_EXISTING,
+                // 0x80,
+                winapi::um::winbase::FILE_FLAG_BACKUP_SEMANTICS,
+                core::ptr::null_mut()
+            )};
+            //If we did not open a handle, we don't need to do any cleanup
+            if r == INVALID_HANDLE_VALUE{
+                return Err(crate::error::Error::from("CreateFileW in canonicalize"))
             }
-            //add buffer
-            out.reserve_exact(s as usize);
-            //actally get path
-            let s = unsafe{winapi::um::fileapi::GetFullPathNameW(file.as_ptr(),out.len() as u32,out.as_mut_ptr(),&mut lps as *mut *mut u16)};
-            if s==0{
-                return Err(crate::error::Error::from("Error whilst calling GetFullPathNameW-2 whilst in canonicalize."));
+            //get needed buffer size
+            let mut buf = Vec::<u16>::with_capacity(0);
+            let size = unsafe{GetFinalPathNameByHandleW(
+                r,
+                buf.as_mut_ptr(),
+                buf.capacity() as u32,
+                winapi::um::winbase::VOLUME_NAME_DOS
+            )};
+            log::trace!("Size of fp is {}",size);
+            //Get Full Path
+            buf.reserve_exact(size as usize);
+            unsafe{
+                core::ptr::write_bytes(buf.as_mut_ptr(),0,size as usize+1);
             }
-            unsafe {file.set_len(s as usize);}
+            let size = unsafe{GetFinalPathNameByHandleW(
+                r,
+                buf.as_mut_ptr(),
+                buf.capacity() as u32,
+                winapi::um::winbase::VOLUME_NAME_DOS
+            )};
+            let err = if size==0 {0} else {unsafe{GetLastError()}};
 
-            let fp = str_from_wide_str(file.as_slice())?;
-            //Safety: lps is suposed to be a ptr into the out buffer according to docs.
-            //This means, that lps>=out.as_ptr()
-            debug_assert!(lps>=out.as_mut_ptr());
-            let lpIndex = (lps as usize) - (out.as_ptr() as usize);
-            let lp = str_from_wide_str(out.as_slice().split_at(lpIndex).1);
+            const SIZE:usize=2+1+MAX_PATH;
+            //size of file-name as u32, and MaxPath characters plus NULL
+            let mut name = Vec::<u16>::with_capacity(SIZE);
 
-            return Ok((fp,lp.ok()));
+
+            let lps=if unsafe{
+                //init elements
+                core::ptr::write_bytes(name.as_mut_ptr(),0,SIZE);
+                name.set_len(SIZE);
+                //Get info
+                GetFileInformationByHandleEx(
+                    r,
+                    winapi::um::minwinbase::FileNameInfo,
+                    name.as_mut_ptr() as *mut winapi::ctypes::c_void,
+                    SIZE as u32
+                )
+            }!=0{
+                let size=unsafe{core::ptr::read(name.as_ptr() as *const u32)};
+                log::info!("Size is {}",size);
+                let name=&name.as_slice()[2..size as usize+2];
+                let name = crate::trim_wide_str::<true>(name);
+                str_from_wide_str(name).ok().map(|s|{
+                    let index=s.rfind('\\');
+                    if let Some(index)=index{
+                        s.split_at(index).1.trim_start_matches('\\').to_string()
+                    }else{
+                        s
+                    }
+                })
+            }else{
+                let error=crate::error::Error::from("GetFileInformationByHandleEx in canonicalize");
+                log::error!("{}",error);
+                None
+            };
+
+            unsafe{CloseHandle(r);}
+            //We need to defer these things, until we actually are finished with the file handle, and have closed it.
+            //Otherwise we would never close the handle
+            if size==0{
+                return Err(crate::error::Error::Winapi("GetFinalPathNameByHandleW in canonicalize",err))
+            }
+            log::info!("Size of fp is {},{}",size,err);
+            //Safety: Trust windows
+            unsafe{
+                buf.set_len(size as usize)
+            };
+
+            let fp = str_from_wide_str(buf.as_slice())?;
+            return Ok((fp,lps));
         },
         #[cfg(feature = "std")]
         crate::Data::Str(s)=>{
@@ -106,6 +173,7 @@ fn canonicalize(p:&crate::Data)->Result<(String,Option<String>)>{
 }
 
 #[cfg(not(feature = "std"))]
+//Fixme:stdless Not reliable
 fn read(file:&Data)->Result<Vec<u8>>{
     use winapi::um::fileapi::{CreateFileW, GetFileSizeEx, ReadFile};
 
@@ -117,7 +185,7 @@ fn read(file:&Data)->Result<Vec<u8>>{
     let r = unsafe{CreateFileW(
         filew.as_ptr(),
         winapi::um::winnt::GENERIC_READ,
-        winapi::um::winnt::FILE_SHARE_READ,
+        winapi::um::winnt::FILE_SHARE_READ|winapi::um::winnt::FILE_SHARE_WRITE|winapi::um::winnt::FILE_SHARE_DELETE,
         core::ptr::null_mut(),
         winapi::um::fileapi::OPEN_EXISTING,
         winapi::um::winnt::FILE_ATTRIBUTE_NORMAL,
@@ -141,6 +209,7 @@ fn read(file:&Data)->Result<Vec<u8>>{
         return Err(crate::error::Error::from("GetFileSizeEx in read"));
     }
     let size=*unsafe{size.QuadPart()};
+    log::info!("Requested read of {} byte file",size);
     //Create a buffer
 
     let mut file_contents = Vec::<u8>::with_capacity(size as usize);
@@ -156,6 +225,8 @@ fn read(file:&Data)->Result<Vec<u8>>{
         let _ = cleanup();
         return Err(crate::error::Error::from("ReadFile in read"));
     }
+    //Safety: Trust Windows
+    unsafe{file_contents.set_len(bytes_read as usize);}
     cleanup()?;
     Ok(file_contents)
 }
@@ -633,37 +704,6 @@ where
         Err(_) => None,
     }
 }
-///Returns a function, which compares a &str against a name
-//todo: make the second function call better
-fn cmp<'a>(name: crate::Data<'a>) -> impl Fn(crate::Data<'_>) -> bool +'a {
-    move |s| {
-        return match name{
-            crate::Data::Str(s2)=>{
-                match s{
-                    crate::Data::Str(s)=>{s2.ends_with(s) || s.ends_with(s2)}
-                    #[cfg(feature = "std")]
-                    crate::Data::Path(p)=>{
-                        let p1=std::path::Path::new(s2);
-                        p1.ends_with(p) || p.ends_with(p1)
-                    }
-                }
-            }
-            #[cfg(feature = "std")]
-            crate::Data::Path(p2)=>{
-                match s{
-                    crate::Data::Str(s)=>{
-                        let p1=std::path::Path::new(s);
-                        p1.ends_with(p2) || p2.ends_with(p1)
-                    }
-                    #[cfg(feature = "std")]
-                    crate::Data::Path(p)=>{
-                        p.ends_with(p2) || p2.ends_with(p)
-                    }
-                }
-            }
-        };
-    }
-}
 
 ///Gets the base address of where a dll is loaded within a process.
 ///The dll is identified by name. name is checked against the whole file name.
@@ -732,12 +772,16 @@ fn get_dll_export(name: &str, path: String) -> Result<u32> {
     } else {
         path
     };
+    log::trace!(r#"Path is "{}""#,path);
+    let path=canonicalize(&crate::Data::Str(path.as_str()))?.0;
+    log::trace!(r#"Canonical Path is "{}""#,path);
     debug_assert!(
         canonicalize(&crate::Data::Str(path.as_str())).is_ok(),
         "parsing {} failed",
         path,
     );
     let k32 = read(&crate::Data::Str(path.as_str()))?;
+    log::trace!("{:#x?}",&k32.as_slice()[0..32]);
     let dll_parsed = pelite::PeFile::from_bytes(k32.as_slice())?;
     let rva = dll_parsed.get_export_by_name(name)?.symbol().unwrap();
     crate::trace!("Found {} at rva:{} in dll {}", name, rva, path);
@@ -750,6 +794,7 @@ pub mod test {
     use std::prelude::*;
     use std::vec::Vec;
     use std::println;
+    use alloc::string::ToString;
 
     use crate::error::Error;
     use crate::platforms::windows::InjectWin;
@@ -819,10 +864,38 @@ pub mod test {
     }
 
     #[test]
+    fn canonicalise()->Result<()>{
+        simple_logger::SimpleLogger::new().init().unwrap();
+        let windir = super::get_windir()?;
+        let mut path = windir.clone();
+        path.push_str(r"\System32\cmd.exe");
+
+        log::info!("{}",path);
+
+        //non-std
+        {
+            let (fp,lps) = super::canonicalize(&crate::Data::Str(path.as_str()))?;
+            assert_eq!(std::path::Path::new(&fp),std::fs::canonicalize(path).unwrap().as_path());
+            assert_eq!(lps,Some("cmd.exe".to_string()));
+        }
+        //std
+        #[cfg(all(feature = "std",test))]
+        {
+            let (fp,lps) = super::canonicalize(&crate::Data::Path(std::path::Path::new(path)))?;
+            assert_eq!(lps,Some("cmd.exe".to_string()));
+            assert_eq!(fp,path);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn get_windir() -> Result<()> {
         let r = super::get_windir();
         assert!(r.is_ok(), "get_windir returned Err({})", r.unwrap_err());
-        let f = std::fs::read_dir(r.unwrap());
+        let r = r.unwrap();
+        let env_var_windir = std::env::var("WINDIR").unwrap();
+        assert_eq!(r,&env_var_windir);
+        let f = std::fs::read_dir(r);
         assert!(
             f.is_ok(),
             "Couldn't read Windows dir. Error is {}",
@@ -853,36 +926,6 @@ pub mod test {
             r?;
         }
         Ok(())
-    }
-
-    #[test]
-    fn cmp() {
-        //Simple case
-        {
-            let f = super::cmp(crate::Data::Str("test"));
-            assert!(f(crate::Data::Str("test")));
-            assert!(!f(crate::Data::Str("not test")));
-            let f = super::cmp(crate::Data::Str("KERNEL32.DLL"));
-            assert!(f(crate::Data::Str("C:\\Windows\\System32\\KERNEL32.DLL")));
-            let f = super::cmp(crate::Data::Str("ntdll.dll"));
-            assert!(f(crate::Data::Str("C:\\Windows\\SYSTEM32\\ntdll.dll")));
-        }
-        //complicated paths
-        {
-            let f = std::vec![
-                super::cmp(crate::Data::Str("C:\\this\\is\\a\\test\\path\\with\\a\\dir\\at\\the\\end\\")),
-                super::cmp(crate::Data::Str("C:\\this\\is\\a\\test\\path\\with\\a\\dir\\at\\the\\end")),
-                super::cmp(crate::Data::Str("C:/this/is/a/test/path/with/a/dir/at/the/end/")),
-                super::cmp(crate::Data::Str("C:/this/is/a/test/path/with/a/dir/at/the/end")),
-            ];
-            for f in f {
-                assert!(f(crate::Data::Str("end")));
-                assert!(f(crate::Data::Str("the\\end")));
-                assert!(f(crate::Data::Str("the/end")));
-                assert!(f(crate::Data::Str("at/the\\end")));
-                assert!(f(crate::Data::Str("at\\the/end")));
-            }
-        }
     }
 
     #[test]
@@ -984,13 +1027,23 @@ pub mod test {
 
     #[test]
     fn find_pid() -> Result<()> {
-        let exe = std::env::current_exe()?;
-        let i = InjectWin::find_pid(crate::Data::Path(&exe.as_path()));
+        let exe = std::env::current_exe().map_err(|_|crate::error::Error::Unsupported(None))?;
+        #[cfg(feature = "std")]
+        {
+            let i = InjectWin::find_pid(crate::Data::Path(exe.as_path()));
+            assert!(i.is_ok(), "{}", i.unwrap_err());
+            assert!(
+                i?.contains(&std::process::id()),
+                "The result did not contain our current process id."
+            );
+        }
+        let i = InjectWin::find_pid(crate::Data::Str(exe.as_os_str().to_str().unwrap()));
         assert!(i.is_ok(), "{}", i.unwrap_err());
         assert!(
             i?.contains(&std::process::id()),
             "The result did not contain our current process id."
         );
+
 
         Ok(())
     }

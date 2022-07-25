@@ -146,6 +146,7 @@ impl Display for Process {
 mod test {
     use crate::Result;
     use winapi::um::winnt::PROCESS_ALL_ACCESS;
+    extern crate std;
 
     #[test]
     fn new() {

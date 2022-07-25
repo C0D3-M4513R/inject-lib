@@ -33,7 +33,6 @@ compile_error!("inject_lib doesn't yet support no alloc environments");
 extern crate core;
 
 use alloc::vec::Vec;
-use std::cmp::Ordering;
 
 ///This struct will expose certain module private functions, to actually use the api.
 ///The exact contents should be considered implementation detail.
@@ -121,18 +120,18 @@ impl<'a> Default for Injector<'a> {
         Self::new(crate::Data::Str(""), 0)
     }
 }
-#[cfg(feature = "std")]
-///This takes a string, and returns only the last path element
-///Since this uses rust builtins, it should "just work".
-pub fn strip_path(dll: &str) -> Result<String> {
-    let pb = std::path::PathBuf::from(dll);
-    match pb.file_name().and_then(|x| x.to_str()) {
-        None => Err(error::Error::Io(std::io::Error::from(
-            std::io::ErrorKind::Unsupported,
-        ))),
-        Some(v) => Ok(v.to_string()),
-    }
-}
+// #[cfg(feature = "std")]
+// ///This takes a string, and returns only the last path element
+// ///Since this uses rust builtins, it should "just work".
+// pub fn strip_path(dll: &str) -> Result<String> {
+//     let pb = std::path::PathBuf::from(dll);
+//     match pb.file_name().and_then(|x| x.to_str()) {
+//         None => Err(error::Error::Io(std::io::Error::from(
+//             std::io::ErrorKind::Unsupported,
+//         ))),
+//         Some(v) => Ok(v.to_string()),
+//     }
+// }
 
 ///This truncates all 0 from the end of a Vec
 ///This will keep other 0 entries in the Vec perfectly intact.
@@ -145,7 +144,7 @@ pub fn trim_wide_str<const FAST:bool>(v: &[u16]) -> &[u16] {
             v.partition_point(|x|*x!=0)
         }else{
             let mut len=v.len();
-            while v.last().map(|x| *x) == Some(0) {
+            while v[len-1] == 0 {
                 len-=1;
             }
             len
@@ -153,6 +152,39 @@ pub fn trim_wide_str<const FAST:bool>(v: &[u16]) -> &[u16] {
     };
     let (out,_) = v.split_at(i);
     return out;
+}
+
+///Returns a function, which compares [crate::Data] against some other [crate::Data].
+///If in no_std enviromenmt, the comparison is affected by forward-slash vs back-slash
+//todo: make the second function call better
+fn cmp<'a>(name: crate::Data<'a>) -> impl Fn(crate::Data<'_>) -> bool +'a {
+    move |s| {
+        return match name{
+            crate::Data::Str(s2)=>{
+                match s{
+                    crate::Data::Str(s)=>{s2.ends_with(s) || s.ends_with(s2)}
+                    #[cfg(feature = "std")]
+                    crate::Data::Path(p)=>{
+                        let p1=std::path::Path::new(s2);
+                        p1.ends_with(p) || p.ends_with(p1)
+                    }
+                }
+            }
+            #[cfg(feature = "std")]
+            crate::Data::Path(p2)=>{
+                match s{
+                    crate::Data::Str(s)=>{
+                        let p1=std::path::Path::new(s);
+                        p1.ends_with(p2) || p2.ends_with(p1)
+                    }
+                    #[cfg(feature = "std")]
+                    crate::Data::Path(p)=>{
+                        p.ends_with(p2) || p2.ends_with(p)
+                    }
+                }
+            }
+        };
+    }
 }
 
 #[cfg(test)]
@@ -172,37 +204,38 @@ mod test {
         assert_eq!(super::trim_wide_str::<false>(buf2.as_slice()), buf);
     }
 
-    #[test]
-    fn strip_path() -> Result<()> {
-        #[cfg(target_family = "windows")]
-        assert_eq!(
-            super::strip_path("C:\\this\\is\\a\\test\\path\\with\\a\\dir\\at\\the\\end\\")?,
-            "end",
-            "strip path failed to strip the end of a win path, with a dir at the end"
-        );
-        assert_eq!(
-            super::strip_path("/this/is/a/test/path/with/a/dir/at/the/end/")?,
-            "end",
-            "strip path failed to strip the end of a rust path, with a dir at the end"
-        );
-        #[cfg(target_family = "windows")]
-        assert_eq!(super::strip_path("C:\\this\\is\\a\\test\\path\\with\\a\\dir\\at\\the\\end")?,"end","strip path failed to strip the end of a win path, with a dir/extensionless file at the end");
-        assert_eq!(super::strip_path("/this/is/a/test/path/with/a/dir/at/the/end")?,"end","strip path failed to strip the end of a rust path, with a dir/extensionless file at the end");
-        #[cfg(target_family = "windows")]
-        assert_eq!(
-            super::strip_path(
-                "C:\\this\\is\\a\\test\\path\\with\\a\\file\\at\\the\\end\\file.txt"
-            )?,
-            "file.txt",
-            "strip path failed to strip the end of a win path, with a file at the end"
-        );
-        assert_eq!(
-            super::strip_path("/this/is/a/test/path/with/a/file/at/the/end/file.txt")?,
-            "file.txt",
-            "strip path failed to strip the end of a rust path, with a file at the end"
-        );
-        Ok(())
-    }
+    // #[test]
+    // fn strip_path() -> Result<()> {
+    //     #[cfg(target_family = "windows")]
+    //     assert_eq!(
+    //         super::strip_path("C:\\this\\is\\a\\test\\path\\with\\a\\dir\\at\\the\\end\\")?,
+    //         "end",
+    //         "strip path failed to strip the end of a win path, with a dir at the end"
+    //     );
+    //     assert_eq!(
+    //         super::strip_path("/this/is/a/test/path/with/a/dir/at/the/end/")?,
+    //         "end",
+    //         "strip path failed to strip the end of a rust path, with a dir at the end"
+    //     );
+    //     #[cfg(target_family = "windows")]
+    //     assert_eq!(super::strip_path("C:\\this\\is\\a\\test\\path\\with\\a\\dir\\at\\the\\end")?,"end","strip path failed to strip the end of a win path, with a dir/extensionless file at the end");
+    //     assert_eq!(super::strip_path("/this/is/a/test/path/with/a/dir/at/the/end")?,"end","strip path failed to strip the end of a rust path, with a dir/extensionless file at the end");
+    //     #[cfg(target_family = "windows")]
+    //     assert_eq!(
+    //         super::strip_path(
+    //             "C:\\this\\is\\a\\test\\path\\with\\a\\file\\at\\the\\end\\file.txt"
+    //         )?,
+    //         "file.txt",
+    //         "strip path failed to strip the end of a win path, with a file at the end"
+    //     );
+    //     assert_eq!(
+    //         super::strip_path("/this/is/a/test/path/with/a/file/at/the/end/file.txt")?,
+    //         "file.txt",
+    //         "strip path failed to strip the end of a rust path, with a file at the end"
+    //     );
+    //     Ok(())
+    // }
+
     #[test]
     fn set_dll() {
         let mut inj = super::Injector::default();
@@ -216,5 +249,63 @@ mod test {
         const PID: u32 = 0;
         inj.set_pid(PID);
         assert_eq!(inj.pid, PID, "Setter did not correctly set the PID");
+    }
+
+    #[test]
+    fn cmp() {
+        simple_logger::SimpleLogger::new().init().ok();
+        //Simple case
+        {
+            let f = super::cmp(crate::Data::Str("test"));
+            assert!(f(crate::Data::Str("test")));
+            assert!(f(crate::Data::Str("something test")));
+            assert!(!f(crate::Data::Str("something 1351")));
+            let f = super::cmp(crate::Data::Str("KERNEL32.DLL"));
+            assert!(f(crate::Data::Str("C:\\Windows\\System32\\KERNEL32.DLL")));
+            let f = super::cmp(crate::Data::Str("ntdll.dll"));
+            assert!(f(crate::Data::Str("C:\\Windows\\SYSTEM32\\ntdll.dll")));
+        }
+        //complicated paths
+        #[cfg(feature = "std")]
+        {
+            let f = std::vec![
+                super::cmp(crate::Data::Path(std::path::Path::new(r"C:\this\is\a\test\path\with\a\dir\at\the\end\"))),
+                super::cmp(crate::Data::Path(std::path::Path::new(r"C:\this\is\a\test\path\with\a\dir\at\the\end"))),
+                super::cmp(crate::Data::Path(std::path::Path::new("C:/this/is/a/test/path/with/a/dir/at/the/end/"))),
+                super::cmp(crate::Data::Path(std::path::Path::new("C:/this/is/a/test/path/with/a/dir/at/the/end"))),
+            ];
+            for f in f {
+                assert!(f(crate::Data::Str("end")));
+                assert!(f(crate::Data::Str("the\\end")));
+                assert!(f(crate::Data::Str("the/end")));
+                assert!(f(crate::Data::Str("at/the\\end")));
+                assert!(f(crate::Data::Str("at\\the/end")));
+                assert!(f(crate::Data::Path(std::path::Path::new("end"))));
+                assert!(f(crate::Data::Path(std::path::Path::new("the\\end"))));
+                assert!(f(crate::Data::Path(std::path::Path::new("the/end"))));
+                assert!(f(crate::Data::Path(std::path::Path::new("at/the\\end"))));
+                assert!(f(crate::Data::Path(std::path::Path::new("at\\the/end"))));
+            }
+        }
+        {
+            let f = super::cmp(crate::Data::Str(r"C:\this\is\a\test\path\with\a\dir\at\the\end\"));
+            assert!(!f(crate::Data::Str("end")));
+            assert!(!f(crate::Data::Str(r"the\end")));
+            assert!(f(crate::Data::Str(r"end\")));
+            let f = super::cmp(crate::Data::Str(r"C:\this\is\a\test\path\with\a\dir\at\the\end"));
+            assert!(f(crate::Data::Str("end")));
+            assert!(f(crate::Data::Str(r"the\end")));
+            assert!(!f(crate::Data::Str(r"end\")));
+            assert!(!f(crate::Data::Str(r"the\end\")));
+            let f = super::cmp(crate::Data::Str("C:/this/is/a/test/path/with/a/dir/at/the/end/"));
+            assert!(f(crate::Data::Str("end/")));
+            assert!(f(crate::Data::Str("the/end/")));
+            assert!(!f(crate::Data::Str("end")));
+            assert!(!f(crate::Data::Str("the/end")));
+            let f = super::cmp(crate::Data::Str("C:/this/is/a/test/path/with/a/dir/at/the/end"));
+            assert!(f(crate::Data::Str("end")));
+            assert!(!f(crate::Data::Str("end/")));
+            assert!(!f(crate::Data::Str("the/end/")));
+        }
     }
 }
