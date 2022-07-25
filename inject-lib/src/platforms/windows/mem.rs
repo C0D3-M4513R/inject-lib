@@ -26,15 +26,11 @@ impl<'a> MemPage<'a> {
     ///If we were to return something, addr would not be valid.
     pub fn new(proc: &'a Process, size: usize, exec: bool) -> Result<Self> {
         if size == 0 {
-            return Err(crate::error::Error::Io(std::io::Error::from(
-                std::io::ErrorKind::InvalidInput,
-            )));
+            return Err(crate::error::CustomError::InvalidInput.into());
         }
         //https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualallocex
         if !proc.has_perm(PROCESS_VM_OPERATION) {
-            return Err(crate::error::Error::Io(std::io::Error::from(
-                std::io::ErrorKind::PermissionDenied,
-            )));
+            return Err(crate::error::CustomError::PermissionDenied.into());
         }
         let addr = unsafe {
             VirtualAllocEx(
@@ -50,12 +46,9 @@ impl<'a> MemPage<'a> {
             )
         };
         if addr.is_null() {
-            return Err(err(alloc::format!(
-                "VirtualAllocEx failed to allocate {}{} bytes on process {:x}",
-                size,
-                if exec { " executable" } else { "" },
-                proc.get_proc() as usize
-            )));
+            return Err(err(
+                    "VirtualAllocEx failed to allocate the requested amount of bytes on a process",
+                ));
         }
         Ok(MemPage {
             proc,
@@ -71,9 +64,7 @@ impl<'a> MemPage<'a> {
     pub fn write(&mut self, buffer: &[u8]) -> Result<usize> {
         //https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-writeprocessmemory
         if !self.proc.has_perm(PROCESS_VM_WRITE) {
-            return Err(crate::error::Error::Io(std::io::Error::from(
-                std::io::ErrorKind::PermissionDenied,
-            )));
+            return Err(crate::error::CustomError::PermissionDenied.into());
         }
         let mut n: usize = 0;
         assert!(buffer.len() <= self.size);
@@ -97,9 +88,7 @@ impl<'a> MemPage<'a> {
     #[allow(unused)]
     pub fn read(&self, size: usize) -> Result<Vec<u8>> {
         if !self.proc.has_perm(PROCESS_VM_READ) {
-            return Err(crate::error::Error::Io(std::io::Error::from(
-                std::io::ErrorKind::PermissionDenied,
-            )));
+            return Err(crate::error::CustomError::PermissionDenied.into());
         }
         let mut buf = Vec::with_capacity(size);
         let mut o = 0;
@@ -157,7 +146,7 @@ impl<'a> Drop for MemPage<'a> {
         crate::trace!("Releasing VirtualAlloc'd Memory");
         if unsafe { VirtualFreeEx(self.proc.get_proc(), self.addr, 0, MEM_RELEASE) } == FALSE {
             crate::error!("Error during cleanup! VirtualFreeEx with MEM_RELEASE should not fail according to doc, but did anyways. A memory page will stay allocated. Addr:{:x},size:{:x}",self.addr as usize,self.size);
-            err::<&str>("VirtualFreeEx of VirtualAllocEx");
+            err("VirtualFreeEx of VirtualAllocEx");
             //Panic during tests, to test of proper disposal of object
             #[cfg(test)]
             panic!("VirtualFreeEx resulted in an error");
@@ -189,7 +178,7 @@ mod test {
 
     #[test]
     fn new_and_write() -> Result<()> {
-        let buf: Vec<u8> = (0..255).collect();
+        let buf: alloc::vec::Vec<u8> = (0..255).collect();
         let proc = &super::super::process::Process::self_proc();
         //write mem
         let mut m = super::MemPage::new(proc, buf.len(), false)?;
@@ -205,7 +194,7 @@ mod test {
 
     #[test]
     fn other_proc() -> Result<()> {
-        let buf: Vec<u8> = (0..255).collect();
+        let buf: alloc::vec::Vec<u8> = (0..255).collect();
         let (mut c, proc) = super::super::test::create_cmd();
         //write mem
         let mut m = super::MemPage::new(&proc, buf.len(), false)?;

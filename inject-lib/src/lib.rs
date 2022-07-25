@@ -33,13 +33,15 @@ compile_error!("inject_lib doesn't yet support no alloc environments");
 extern crate core;
 
 use alloc::vec::Vec;
+use std::cmp::Ordering;
+
 ///This struct will expose certain module private functions, to actually use the api.
 ///The exact contents should be considered implementation detail.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Injector<'a> {
     ///The path to a dll. This may be in any format, that rust understands
-    pub dll: &'a str,
+    pub dll: Data<'a>,
     ///The pid the dll should be injected into
     pub pid: u32,
 }
@@ -60,20 +62,39 @@ pub trait Inject {
     ///Even if no processes are found, an empty Vector should return.
     fn find_pid(name: Data) -> Result<Vec<u32>>;
 }
-
+///Data can be a Path(if we have std), or a String.
+///Data will get handled differently in no_std and std scenarios
+#[derive(Debug,Copy,Clone,PartialEq,Eq,PartialOrd,Ord)]
 pub enum Data<'a>{
+    ///This a Path as a String
     Str(&'a str),
+    ///This is a Path encoded as a Path std object
     #[cfg(feature = "std")]
     Path(&'a std::path::Path)
+}
+impl<'a> Data<'a>{
+    fn get_str(&self)->Option<&'a str>{
+        match self {
+            Data::Str(a)=>Some(a),
+            _=>None,
+        }
+    }
+    #[cfg(feature = "std")]
+    fn get_path(&self)->Option<&'a std::path::Path>{
+        match self {
+            Data::Path(a)=>Some(a),
+            _=>None,
+        }
+    }
 }
 
 impl<'a> Injector<'a> {
     ///Create a new Injector object.
-    pub fn new(dll: &'a str, pid: u32) -> Self {
+    pub fn new(dll: Data<'a>, pid: u32) -> Self {
         Injector { dll, pid }
     }
     ///Sets the dll
-    pub fn set_dll(&mut self, dll: &'a str) {
+    pub fn set_dll(&mut self, dll: Data<'a>) {
         self.dll = dll;
     }
     ///Sets the pid
@@ -97,7 +118,7 @@ impl<'a> Injector<'a> {
 
 impl<'a> Default for Injector<'a> {
     fn default() -> Self {
-        Self::new("", 0)
+        Self::new(crate::Data::Str(""), 0)
     }
 }
 #[cfg(feature = "std")]
@@ -118,9 +139,9 @@ pub fn strip_path(dll: &str) -> Result<String> {
 ///This has a worst case performance of o(n).
 ///if fast==true, the data MUST only contain NULL-values at the end of the string O(log n)
 ///else O(n)
-pub fn trim_wide_str<const fast:bool>(v: &[u16]) -> &[u16] {
+pub fn trim_wide_str<const FAST:bool>(v: &[u16]) -> &[u16] {
     let i= {
-        if fast{
+        if FAST {
             v.partition_point(|x|*x!=0)
         }else{
             let mut len=v.len();
@@ -136,6 +157,7 @@ pub fn trim_wide_str<const fast:bool>(v: &[u16]) -> &[u16] {
 
 #[cfg(test)]
 mod test {
+    use alloc::vec::Vec;
     ///This string contains a bunch of special chars, to test methods operating on strings.
     pub const STR:&str = "This is just any string, since we are not testing anything else, other than setting the dll.!'\r\n\t%$§\"{\\[()]}=?´`öäü^°,.-;:_#+*~<>|³²@";
 
@@ -184,8 +206,9 @@ mod test {
     #[test]
     fn set_dll() {
         let mut inj = super::Injector::default();
-        inj.set_dll(STR);
-        assert_eq!(inj.dll, STR, "Setter did not correctly set the dll string");
+        let dll=crate::Data::Str(STR);
+        inj.set_dll(dll);
+        assert_eq!(inj.dll, dll, "Setter did not correctly set the dll string");
     }
     #[test]
     fn set_pid() {

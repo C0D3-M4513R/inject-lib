@@ -32,7 +32,8 @@ features=[
     "memoryapi",#Allocate,Free and Write Process memory. Used in injection and ejection
     "synchapi",#Wait, until Dll is actually attached.
     "winbase",#Infinity. Used with "synchapi"
-    "impl-debug"
+    "impl-debug",
+    "impl-default"#defalt impls
 ]
 
 [target.'cfg(target_family="windows")'.dependencies]
@@ -46,6 +47,7 @@ widestring = {version="1",default-features=false}
 
 [dev-dependencies]
 simple_logger = {version = "2.1.0",default-features=false}
+thread_local = "1.1.4"
 
 [features]
 default=["alloc"]

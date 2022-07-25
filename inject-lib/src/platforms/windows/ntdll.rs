@@ -9,8 +9,12 @@ use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
 use pelite::Wrap;
 use core::mem::MaybeUninit;
 use core::ops::Shl;
-use std::ptr::slice_from_raw_parts;
+use core::ptr::slice_from_raw_parts;
+use core::num::NonZeroUsize;
 use widestring::U16CString;
+use alloc::vec::Vec;
+use alloc::boxed::Box;
+use alloc::string::String;
 pub use types::LDR_DATA_TABLE_ENTRY64;
 use winapi::shared::minwindef::{HMODULE, PULONG, ULONG};
 use winapi::shared::ntdef::{NTSTATUS, PVOID};
@@ -262,9 +266,7 @@ impl NTDLL {
     ) -> Result<Vec<u8>> {
         proc.err_pseudo_handle()?;
         if !proc.has_perm(PROCESS_VM_READ) {
-            return Err(crate::error::Error::Io(std::io::Error::from(
-                std::io::ErrorKind::PermissionDenied,
-            )));
+            return Err(crate::error::CustomError::PermissionDenied.into());
         }
         static FNS: once_cell::race::OnceBox<FnNtdllWOW> = once_cell::race::OnceBox::new();
         let fns:Result<&FnNtdllWOW,crate::error::Error> = FNS.get_or_try_init(|| {
@@ -292,7 +294,7 @@ impl NTDLL {
             }
             #[cfg(target_pointer_width = "32")]
             NtdllFn::WOW(v) => {
-                let cfn: types::FnNtWOW64ReadVirtualMemory64 = core::mem::transmute(*v);
+                let cfn: types::FnNtWOW64ReadVirtualMemory64 = core::mem::transmute(v);
                 cfn(
                     proc.get_proc(),
                     addr,
@@ -369,9 +371,7 @@ impl NTDLL {
         if !proc.has_perm(PROCESS_QUERY_INFORMATION)
             && !proc.has_perm(PROCESS_QUERY_LIMITED_INFORMATION)
         {
-            return Err(crate::error::Error::Io(std::io::Error::from(
-                std::io::ErrorKind::PermissionDenied,
-            )));
+            return Err(crate::error::CustomError::PermissionDenied.into());
         }
         //Function prototype, of the NtQueryInformationProcess function in ntdll.
         type FnNtQueryInformationProcess =
@@ -510,7 +510,7 @@ impl<'a, 'b, 'c> FnNtdllWOW<'a, 'b, 'c> {
                     )) as usize;
                     Ok(NonZeroUsize::new(tmp).unwrap())
                 })
-                .map(|x| NtdllFn::WOW(x))
+                .map(|x| NtdllFn::WOW(x.get()))
         }
     }
     ///returns a function which is the NtReadVirtualMemory function inside NTDLL
@@ -567,7 +567,7 @@ pub mod test {
                         pelite::Wrap::T32(x) => x.DllBase as u64,
                         pelite::Wrap::T64(x) => x.DllBase as u64,
                     },
-                    |x| super::super::cmp("ntdll.dll")(&x),
+                    |x| super::super::cmp(crate::Data::Str("ntdll.dll"))(crate::Data::Str(x.as_str())),
                 ),
             )
         };

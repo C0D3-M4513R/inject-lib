@@ -62,9 +62,7 @@ impl Process {
     #[cfg_attr(not(feature = "ntdll"), allow(unused))]
     pub fn err_pseudo_handle(&self) -> Result<()> {
         if !self.has_real_handle() {
-            return Err(crate::error::Error::Io(std::io::Error::from(
-                std::io::ErrorKind::InvalidInput,
-            )));
+            return Err(crate::error::CustomError::InvalidInput.into());
         }
         Ok(())
     }
@@ -103,9 +101,7 @@ impl Process {
         {
             self.unchecked_is_under_wow()
         } else {
-            Err(crate::error::Error::from(std::io::Error::from(
-                std::io::ErrorKind::PermissionDenied,
-            )))
+            Err(crate::error::CustomError::PermissionDenied.into())
         }
     }
     ///Get the contained process Handle
@@ -131,7 +127,7 @@ impl Drop for Process {
         crate::trace!("Cleaning Process Handle");
         if unsafe { CloseHandle(self.proc as HANDLE) } == FALSE {
             crate::error!("Error during Process Handle cleanup!");
-            err::<alloc::string::String>(alloc::string::String::from("CloseHandle of ") + core::stringify!($name));
+            err("CloseHandle of OpenProcess");
         }
     }
 }
