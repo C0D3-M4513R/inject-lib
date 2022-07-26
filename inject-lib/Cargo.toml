@@ -49,6 +49,9 @@ widestring = {version="1",default-features=false}
 simple_logger = {version = "2.1.0",default-features=false}
 thread_local = "1.1.4"
 
+[lib]
+required-features=["alloc"]
+
 [features]
 default=["alloc"]
 nightly=[]
