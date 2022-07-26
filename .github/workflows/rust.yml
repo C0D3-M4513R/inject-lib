@@ -25,7 +25,7 @@ jobs:
       matrix:
         args: [-v] #--release -v,
         toolchain: ["beta","stable"]
-        features: ["","std","x86tox64","x86tox64 std"]
+        features: ['"alloc"','"std"','"x86tox64"','"x86tox64 std"']
         target: [i686-pc-windows-msvc,x86_64-pc-windows-msvc]
     steps:
       - uses: actions/checkout@v3

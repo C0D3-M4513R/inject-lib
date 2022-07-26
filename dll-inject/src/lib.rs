@@ -1,12 +1,12 @@
 #![cfg(target_family = "windows")]
-#![cfg_attr(not(feature = "std"),no_std)]
+#![cfg_attr(not(feature = "std"), no_std)]
 #![cfg(not(feature = "alloc"))]
 compile_error!("Cannot work without alloc");
 
 extern crate alloc;
 use alloc::vec::Vec;
-use inject_lib::{Data, Inject, Injector};
 use core::ptr::null_mut;
+use inject_lib::{Data, Inject, Injector};
 
 ///Reads len bytes from ptr, and returns it as a vec
 fn read(ptr: *mut u8, len: usize) -> Vec<u8> {
