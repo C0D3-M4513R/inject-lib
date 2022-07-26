@@ -193,6 +193,7 @@ mod test {
     }
 
     #[test]
+    #[ignore]
     fn other_proc() -> Result<()> {
         let buf: alloc::vec::Vec<u8> = (0..255).collect();
         let (mut c, proc) = super::super::test::create_cmd();

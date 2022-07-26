@@ -181,7 +181,9 @@ fn read(file:&Data)->Result<Vec<u8>>{
         crate::Data::Str(s)=>*s,
     };
     //Get File Handle
-    let filew=wide_str_from_str(file);
+    let mut filew=wide_str_from_str(file);
+    filew.push(0);
+    let filew=filew;
     let r = unsafe{CreateFileW(
         filew.as_ptr(),
         winapi::um::winnt::GENERIC_READ,
@@ -208,25 +210,32 @@ fn read(file:&Data)->Result<Vec<u8>>{
         let _ = cleanup();
         return Err(crate::error::Error::from("GetFileSizeEx in read"));
     }
-    let size=*unsafe{size.QuadPart()};
+    let mut size=*unsafe{size.QuadPart()};
+    let mut read = 0;
     log::info!("Requested read of {} byte file",size);
     //Create a buffer
-
-    let mut file_contents = Vec::<u8>::with_capacity(size as usize);
-    let mut bytes_read:u32=0;
-    //we are not reading async, because we did not set FILE_FLAG_OVERLAPPED in the handle creation
-    if unsafe{ReadFile(
-        r,
-        file_contents.as_mut_ptr() as *mut winapi::ctypes::c_void,
-        size as u32,
-        &mut bytes_read as *mut u32,
-        core::ptr::null_mut()
-    )}==0{
-        let _ = cleanup();
-        return Err(crate::error::Error::from("ReadFile in read"));
+    let mut file_contents = Vec::<u8>::with_capacity(0);
+    file_contents.reserve(size as usize);
+    //Read
+    while read<size{
+        let mut bytes_read:u32=0;
+        //we are not reading async, because we did not set FILE_FLAG_OVERLAPPED in the handle creation
+        let returnCode=unsafe{ReadFile(
+            r,
+            file_contents.spare_capacity_mut().as_mut_ptr() as *mut winapi::ctypes::c_void,
+            size as u32,
+            &mut bytes_read as *mut u32,
+            core::ptr::null_mut()
+        )};
+        if returnCode == 0{
+            let _ = cleanup();
+            return Err(crate::error::Error::from("ReadFile in read"));
+        }
+        read+=bytes_read as i64;
+        log::info!("read {} bytes, and {} in total",bytes_read,read);
     }
     //Safety: Trust Windows
-    unsafe{file_contents.set_len(bytes_read as usize);}
+    unsafe{file_contents.set_len(read as usize);}
     cleanup()?;
     Ok(file_contents)
 }
@@ -855,6 +864,7 @@ pub mod test {
     }
 
     #[test]
+    #[ignore]
     ///Tests, that create_cmd does not panic, and that the drop will work.
     ///The decompiler tells some interesting stuff. I would rather have it tested here.
     fn test_create_cmd() {
@@ -865,7 +875,7 @@ pub mod test {
 
     #[test]
     fn canonicalise()->Result<()>{
-        simple_logger::SimpleLogger::new().init().unwrap();
+        simple_logger::init().ok();
         let windir = super::get_windir()?;
         let mut path = windir.clone();
         path.push_str(r"\System32\cmd.exe");
@@ -885,6 +895,24 @@ pub mod test {
             assert_eq!(lps,Some("cmd.exe".to_string()));
             assert_eq!(fp,path);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn read()->Result<()>{
+        simple_logger::SimpleLogger::new().init().ok();
+        let windir = super::get_windir()?;
+        let mut path = windir.clone();
+        path.push_str(r"\System32\cmd.exe");
+
+        log::info!("{}",path);
+
+        let cstd = std::fs::read(&path).unwrap();
+        log::info!("STD read size is {}",cstd.len());
+        let c = super::read(&crate::Data::Str(path.as_str()))?;
+        log::info!("self read size is {}",c.len());
+        //assert_eq!(c,cstd,"std and self read result is not same");
+        assert!(c==cstd);
         Ok(())
     }
 
@@ -957,6 +985,7 @@ pub mod test {
     }
 
     #[test]
+    #[ignore]
     fn get_module_in_pid() -> Result<()> {
         let test = |id: u32| {
             super::get_module_in_pid(
@@ -995,6 +1024,7 @@ pub mod test {
     }
 
     #[test]
+    #[ignore]
     fn get_module() -> Result<()> {
         //self test
         {

@@ -606,6 +606,7 @@ pub mod test {
     }
 
     #[test]
+    #[ignore]
     fn read_memory() -> Result<()> {
         //test read_mem on self
         {
@@ -651,6 +652,7 @@ pub mod test {
     #[test]
     #[ignore]
     fn query_process_information_self() -> Result<()> {
+        simple_logger::init().ok();
         let ntdll = super::NTDLL::new()?;
         //test real handle self
         {
