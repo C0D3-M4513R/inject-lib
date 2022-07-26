@@ -1,9 +1,9 @@
 #![allow(non_snake_case)] //Windows structs do not follow rust convention. Ignore warnings about names.
 
+use core::fmt::Debug;
 use ntapi::ntapi_base::KPRIORITY;
 use ntapi::ntldr::LDR_DLL_LOAD_REASON;
 use ntapi::ntpsapi::GDI_HANDLE_BUFFER64;
-use std::fmt::Debug;
 use winapi::shared::basetsd::ULONG64;
 use winapi::shared::minwindef::PULONG;
 use winapi::shared::ntdef::{BOOLEAN, CHAR, NTSTATUS, UCHAR, ULONG, UNICODE_STRING64, USHORT};
@@ -129,7 +129,7 @@ STRUCT! {struct PEB64 {
     FlsCallback: ULONG64, // WOW64_POINTER
     FlsListHead: LIST_ENTRY64,
     FlsBitmap: ULONG64, // WOW64_POINTER
-    FlsBitmapBits: [ULONG; FLS_MAXIMUM_AVAILABLE as usize / (std::mem::size_of::<ULONG>() * 8)],
+    FlsBitmapBits: [ULONG; FLS_MAXIMUM_AVAILABLE as usize / (core::mem::size_of::<ULONG>() * 8)],
     FlsHighIndex: ULONG,
     WerRegistrationData: ULONG64, // WOW64_POINTER
     WerShipAssertPtr: ULONG64, // WOW64_POINTER

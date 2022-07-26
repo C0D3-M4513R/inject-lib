@@ -1,7 +1,6 @@
 #![cfg(target_os = "windows")]
 
 use crate::error::Error;
-use std::fmt::Display;
 use winapi::um::errhandlingapi::GetLastError;
 
 ///Calls a closure
@@ -17,7 +16,7 @@ macro_rules! check_ptr {
             #[allow(unused_unsafe)]
             let _tmp = unsafe{$name($($args),*)};
             if $crate::platforms::windows::macros::__call__(_tmp,$predicate){
-                return Err($crate::error::Error::from(std::stringify!($name)));
+                return Err($crate::error::Error::from(core::stringify!($name)));
             } else{
                _tmp
             }
@@ -30,11 +29,8 @@ macro_rules! check_ptr {
 pub(crate) use check_ptr;
 
 ///Gets the windows Error, prints it, and returns an error.
-pub(crate) fn err<E>(fn_name: E) -> Error
-where
-    E: Display,
-{
+pub(crate) fn err(fn_name: &'static str) -> Error {
     let err = unsafe { GetLastError() };
     crate::error!("{} failed! Errcode is:'{}'. Check, what the error code means here:'https://docs.microsoft.com/en-us/windows/win32/debug/system-error-codes'", fn_name, err);
-    Error::Winapi(fn_name.to_string(), err)
+    Error::Winapi(fn_name, err)
 }

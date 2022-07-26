@@ -1,6 +1,8 @@
 use crate::Result;
-use std::fmt::{Display, Formatter};
+use core::fmt::{Display, Formatter};
 use winapi::shared::minwindef::{FALSE, LPCVOID, LPVOID};
+
+use alloc::vec::Vec;
 
 use super::macros::err;
 use super::process::Process;
@@ -24,20 +26,16 @@ impl<'a> MemPage<'a> {
     ///If we were to return something, addr would not be valid.
     pub fn new(proc: &'a Process, size: usize, exec: bool) -> Result<Self> {
         if size == 0 {
-            return Err(crate::error::Error::Io(std::io::Error::from(
-                std::io::ErrorKind::InvalidInput,
-            )));
+            return Err(crate::error::CustomError::InvalidInput.into());
         }
         //https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualallocex
         if !proc.has_perm(PROCESS_VM_OPERATION) {
-            return Err(crate::error::Error::Io(std::io::Error::from(
-                std::io::ErrorKind::PermissionDenied,
-            )));
+            return Err(crate::error::CustomError::PermissionDenied.into());
         }
         let addr = unsafe {
             VirtualAllocEx(
                 proc.get_proc(),
-                std::ptr::null_mut(),
+                core::ptr::null_mut(),
                 size,
                 MEM_COMMIT | MEM_RESERVE,
                 if exec {
@@ -48,12 +46,9 @@ impl<'a> MemPage<'a> {
             )
         };
         if addr.is_null() {
-            return Err(err(format!(
-                "VirtualAllocEx failed to allocate {}{} bytes on process {:x}",
-                size,
-                if exec { " executable" } else { "" },
-                proc.get_proc() as usize
-            )));
+            return Err(err(
+                "VirtualAllocEx failed to allocate the requested amount of bytes on a process",
+            ));
         }
         Ok(MemPage {
             proc,
@@ -69,9 +64,7 @@ impl<'a> MemPage<'a> {
     pub fn write(&mut self, buffer: &[u8]) -> Result<usize> {
         //https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-writeprocessmemory
         if !self.proc.has_perm(PROCESS_VM_WRITE) {
-            return Err(crate::error::Error::Io(std::io::Error::from(
-                std::io::ErrorKind::PermissionDenied,
-            )));
+            return Err(crate::error::CustomError::PermissionDenied.into());
         }
         let mut n: usize = 0;
         assert!(buffer.len() <= self.size);
@@ -95,9 +88,7 @@ impl<'a> MemPage<'a> {
     #[allow(unused)]
     pub fn read(&self, size: usize) -> Result<Vec<u8>> {
         if !self.proc.has_perm(PROCESS_VM_READ) {
-            return Err(crate::error::Error::Io(std::io::Error::from(
-                std::io::ErrorKind::PermissionDenied,
-            )));
+            return Err(crate::error::CustomError::PermissionDenied.into());
         }
         let mut buf = Vec::with_capacity(size);
         let mut o = 0;
@@ -138,7 +129,7 @@ impl<'a> MemPage<'a> {
     }
 }
 impl<'a> Display for MemPage<'a> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
             "(proc:{:x}, addr:{:x}, size:{:x}, exec:{})",
@@ -155,7 +146,7 @@ impl<'a> Drop for MemPage<'a> {
         crate::trace!("Releasing VirtualAlloc'd Memory");
         if unsafe { VirtualFreeEx(self.proc.get_proc(), self.addr, 0, MEM_RELEASE) } == FALSE {
             crate::error!("Error during cleanup! VirtualFreeEx with MEM_RELEASE should not fail according to doc, but did anyways. A memory page will stay allocated. Addr:{:x},size:{:x}",self.addr as usize,self.size);
-            err::<&str>("VirtualFreeEx of VirtualAllocEx");
+            err("VirtualFreeEx of VirtualAllocEx");
             //Panic during tests, to test of proper disposal of object
             #[cfg(test)]
             panic!("VirtualFreeEx resulted in an error");
@@ -169,7 +160,7 @@ mod test {
 
     #[test]
     fn zero_size_page() {
-        let proc = super::super::process::Process::self_proc();
+        let proc = &super::super::process::Process::self_proc();
         let m = super::MemPage::new(proc, 0, false);
         assert!(
             m.is_err(),
@@ -179,7 +170,7 @@ mod test {
 
     #[test]
     fn check_proc() -> Result<()> {
-        let proc = super::super::process::Process::self_proc();
+        let proc = &super::super::process::Process::self_proc();
         let m = super::MemPage::new(proc, 1, false)?;
         assert!(m.check_proc(proc));
         Ok(())
@@ -187,8 +178,8 @@ mod test {
 
     #[test]
     fn new_and_write() -> Result<()> {
-        let buf: Vec<u8> = (0..255).collect();
-        let proc = super::super::process::Process::self_proc();
+        let buf: alloc::vec::Vec<u8> = (0..255).collect();
+        let proc = &super::super::process::Process::self_proc();
         //write mem
         let mut m = super::MemPage::new(proc, buf.len(), false)?;
         let w = m.write(buf.as_slice())?;
@@ -203,7 +194,7 @@ mod test {
 
     #[test]
     fn other_proc() -> Result<()> {
-        let buf: Vec<u8> = (0..255).collect();
+        let buf: alloc::vec::Vec<u8> = (0..255).collect();
         let (mut c, proc) = super::super::test::create_cmd();
         //write mem
         let mut m = super::MemPage::new(&proc, buf.len(), false)?;

@@ -5,7 +5,7 @@ on:
     branches: [staging,trying,dev,main]
     # Remove the line above to run when pushing to master
   pull_request:
-    branches: [ main ]
+    branches: [ main, dev ]
   workflow_dispatch:
 env:
   CARGO_TERM_COLOR: always
@@ -13,7 +13,7 @@ env:
 jobs:
   ci:
     name: "build-ci"
-    needs: ["build", "build-ubuntu", "build-beta"]
+    needs: ["build", "build-ubuntu"]
     runs-on: ubuntu-latest
     steps:
       - name: Done
@@ -24,21 +24,26 @@ jobs:
     strategy:
       matrix:
         args: [-v] #--release -v,
+        toolchain: ["beta","stable"]
+        features: ['"alloc"','"std"','"x86tox64"','"x86tox64 std"']
         target: [i686-pc-windows-msvc,x86_64-pc-windows-msvc]
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: stable
+          profile: minimal
+          toolchain: ${{ matrix.toolchain }}
+          override: true
           target: ${{ matrix.target }}
       - uses: actions-rs/cargo@v1
         with:
           command: build
-          args: ${{ matrix.args }} --target ${{ matrix.target }} --package inject-lib
+          args: ${{ matrix.args }} --features ${{ matrix.features }} --target ${{ matrix.target }} --package inject-lib
       - uses: actions-rs/cargo@v1
         with:
           command: test
-          args: ${{ matrix.args }} --target ${{ matrix.target }} --package inject-lib
+          args: ${{ matrix.args }} --features ${{ matrix.features }} --target ${{ matrix.target }} --package inject-lib
+
   build-ubuntu:
     name: "build-ubuntu"
     runs-on: ubuntu-latest
@@ -59,26 +64,3 @@ jobs:
         with:
           command: test
           args: ${{ matrix.args }} --features ntdll --package inject-lib
-
-  build-beta:
-    name: "build-beta"
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ windows-latest ] #ubuntu-latest
-        args: [-v] #--release -v
-        target: [ i686-pc-windows-msvc,x86_64-pc-windows-msvc ]
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: beta
-          target: ${{ matrix.target }}
-      - uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: ${{ matrix.args }} --all-features --target ${{ matrix.target }} --package inject-lib
-      - uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: ${{ matrix.args }} --all-features --target ${{ matrix.target }} --package inject-lib

@@ -1,10 +1,10 @@
 use super::macros::{check_ptr, err};
 use crate::Result;
-use once_cell::sync::OnceCell;
-use std::fmt::{Display, Formatter};
+use core::fmt::{Display, Formatter};
+use once_cell::race::OnceBool;
 use winapi::shared::minwindef::{DWORD, FALSE};
 use winapi::um::handleapi::CloseHandle;
-use winapi::um::processthreadsapi::{GetCurrentProcess, OpenProcess};
+use winapi::um::processthreadsapi::{GetCurrentProcess, GetCurrentProcessId, OpenProcess};
 use winapi::um::winnt::{
     HANDLE, IMAGE_FILE_MACHINE_UNKNOWN, PROCESS_ALL_ACCESS, PROCESS_QUERY_INFORMATION,
     PROCESS_QUERY_LIMITED_INFORMATION,
@@ -19,7 +19,7 @@ pub struct Process {
     proc: usize,
     pid: u32,
     perms: DWORD,
-    wow: OnceCell<bool>,
+    wow: OnceBool,
 }
 impl Process {
     pub fn new(pid: u32, perms: DWORD) -> Result<Self> {
@@ -43,14 +43,13 @@ impl Process {
     }
     ///Constructs a Process, using a pseudo-handle.
     ///That is a special type of handle. It does not actually exists, but just works. (except in ntdll)
-    pub fn self_proc() -> &'static Self {
-        static PRC: OnceCell<Process> = OnceCell::new();
-        PRC.get_or_init(|| Process {
+    pub fn self_proc() -> Self {
+        Process {
             proc: unsafe { GetCurrentProcess() as usize },
-            pid: std::process::id(),
+            pid: unsafe { GetCurrentProcessId() },
             perms: PROCESS_ALL_ACCESS,
             wow: Default::default(),
-        })
+        }
     }
     ///Checks, if this process has real handle
     #[must_use]
@@ -63,9 +62,7 @@ impl Process {
     #[cfg_attr(not(feature = "ntdll"), allow(unused))]
     pub fn err_pseudo_handle(&self) -> Result<()> {
         if !self.has_real_handle() {
-            return Err(crate::error::Error::Io(std::io::Error::from(
-                std::io::ErrorKind::InvalidInput,
-            )));
+            return Err(crate::error::CustomError::InvalidInput.into());
         }
         Ok(())
     }
@@ -94,7 +91,6 @@ impl Process {
     pub fn unchecked_is_under_wow(&self) -> Result<bool> {
         self.wow
             .get_or_try_init(|| unsafe { self.unchecked_impl_is_under_wow() })
-            .copied()
     }
     ///Returns true, if the supplied process-handle is running under WOW, otherwise false.
     #[must_use]
@@ -105,9 +101,7 @@ impl Process {
         {
             self.unchecked_is_under_wow()
         } else {
-            Err(crate::error::Error::from(std::io::Error::from(
-                std::io::ErrorKind::PermissionDenied,
-            )))
+            Err(crate::error::CustomError::PermissionDenied.into())
         }
     }
     ///Get the contained process Handle
@@ -133,13 +127,13 @@ impl Drop for Process {
         crate::trace!("Cleaning Process Handle");
         if unsafe { CloseHandle(self.proc as HANDLE) } == FALSE {
             crate::error!("Error during Process Handle cleanup!");
-            err::<String>("CloseHandle of ".to_string() + std::stringify!($name));
+            err("CloseHandle of OpenProcess");
         }
     }
 }
 
 impl Display for Process {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
             "(proc:{:x},pid: {},perms:{:x}, wow:{:#?})",
@@ -152,6 +146,7 @@ impl Display for Process {
 mod test {
     use crate::Result;
     use winapi::um::winnt::PROCESS_ALL_ACCESS;
+    extern crate std;
 
     #[test]
     fn new() {

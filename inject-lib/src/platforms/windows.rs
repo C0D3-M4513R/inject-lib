@@ -1,14 +1,14 @@
 #![cfg(windows)]
 mod macros;
 
-use crate::{strip_path, Inject, Injector, Result};
+use crate::{cmp, Data, Inject, Injector, Result};
 use macros::check_ptr;
-use std::ffi::OsString;
 
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+
+use core::mem::size_of;
 use pelite::Pod;
-use std::mem::size_of;
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
-use std::path::{Path, PathBuf};
 use winapi::shared::minwindef::{DWORD, FALSE, MAX_PATH};
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
 use winapi::um::processthreadsapi::CreateRemoteThread;
@@ -31,6 +31,8 @@ mod thread;
 
 #[cfg(feature = "ntdll")]
 use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
+use winapi::um::errhandlingapi::GetLastError;
+use winapi::um::winbase::GetFileInformationByHandleEx;
 
 use crate::error::Error;
 use mem::MemPage;
@@ -38,10 +40,237 @@ use process::Process;
 
 ///This function builds a String, from a WTF-encoded buffer.
 pub fn str_from_wide_str(v: &[u16]) -> Result<String> {
-    OsString::from_wide(v).into_string().map_err(|e| {
-        crate::warn!("Couldn't convert widestring, to string. The Buffer contained invalid non-UTF-8 characters . Buf is {:#?}.", e);
-        crate::error::Error::WTFConvert(e)
-    })
+    let tmp: Vec<Result<char, widestring::error::DecodeUtf16Error>> =
+        widestring::decode_utf16(v.iter().map(|x| *x)).collect();
+    let mut o = String::with_capacity(v.len());
+    for i in tmp {
+        match i {
+            Err(e) => return Err(crate::error::Error::WTFConvert(e)),
+            Ok(v) => o.push(v),
+        }
+    }
+    o.shrink_to_fit();
+    Ok(o)
+}
+
+///This function builds a String, from a WTF-encoded buffer.
+pub fn wide_str_from_str(v: &str) -> Vec<u16> {
+    let tmp: Vec<u16> = widestring::encode_utf16(v.chars()).collect();
+    //mp.shrink_to_fit();
+    tmp
+}
+
+fn canonicalize(p: &crate::Data) -> Result<(String, Option<String>)> {
+    match p {
+        #[cfg(not(feature = "std"))]
+        crate::Data::Str(s) => {
+            use winapi::um::fileapi::{CreateFileW, GetFinalPathNameByHandleW};
+            //Encode file-name
+            let mut file = wide_str_from_str(s);
+            file.push(0);
+            //Get File/Directory Handle
+            let r = unsafe {
+                CreateFileW(
+                    file.as_ptr(),
+                    0,
+                    winapi::um::winnt::FILE_SHARE_READ
+                        | winapi::um::winnt::FILE_SHARE_WRITE
+                        | winapi::um::winnt::FILE_SHARE_DELETE,
+                    core::ptr::null_mut(),
+                    winapi::um::fileapi::OPEN_EXISTING,
+                    // 0x80,
+                    winapi::um::winbase::FILE_FLAG_BACKUP_SEMANTICS,
+                    core::ptr::null_mut(),
+                )
+            };
+            //If we did not open a handle, we don't need to do any cleanup
+            if r == INVALID_HANDLE_VALUE {
+                return Err(crate::error::Error::from("CreateFileW in canonicalize"));
+            }
+            //get needed buffer size
+            let mut buf = Vec::<u16>::with_capacity(0);
+            let size = unsafe {
+                GetFinalPathNameByHandleW(
+                    r,
+                    buf.as_mut_ptr(),
+                    buf.capacity() as u32,
+                    winapi::um::winbase::VOLUME_NAME_DOS,
+                )
+            };
+            log::trace!("Size of fp is {}", size);
+            //Get Full Path
+            buf.reserve_exact(size as usize);
+            unsafe {
+                core::ptr::write_bytes(buf.as_mut_ptr(), 0, size as usize + 1);
+            }
+            let size = unsafe {
+                GetFinalPathNameByHandleW(
+                    r,
+                    buf.as_mut_ptr(),
+                    buf.capacity() as u32,
+                    winapi::um::winbase::VOLUME_NAME_DOS,
+                )
+            };
+            let err = if size == 0 {
+                0
+            } else {
+                unsafe { GetLastError() }
+            };
+
+            const SIZE: usize = 2 + 1 + MAX_PATH;
+            //size of file-name as u32, and MaxPath characters plus NULL
+            let mut name = Vec::<u16>::with_capacity(SIZE);
+
+            let lps = if unsafe {
+                //init elements
+                core::ptr::write_bytes(name.as_mut_ptr(), 0, SIZE);
+                name.set_len(SIZE);
+                //Get info
+                GetFileInformationByHandleEx(
+                    r,
+                    winapi::um::minwinbase::FileNameInfo,
+                    name.as_mut_ptr() as *mut winapi::ctypes::c_void,
+                    SIZE as u32,
+                )
+            } != 0
+            {
+                let size = unsafe { core::ptr::read(name.as_ptr() as *const u32) };
+                log::info!("Size is {}", size);
+                let name = &name.as_slice()[2..size as usize + 2];
+                let name = crate::trim_wide_str::<true>(name);
+                str_from_wide_str(name).ok().map(|s| {
+                    let index = s.rfind('\\');
+                    if let Some(index) = index {
+                        s.split_at(index).1.trim_start_matches('\\').to_string()
+                    } else {
+                        s
+                    }
+                })
+            } else {
+                let error =
+                    crate::error::Error::from("GetFileInformationByHandleEx in canonicalize");
+                log::error!("{}", error);
+                None
+            };
+
+            unsafe {
+                CloseHandle(r);
+            }
+            //We need to defer these things, until we actually are finished with the file handle, and have closed it.
+            //Otherwise we would never close the handle
+            if size == 0 {
+                return Err(crate::error::Error::Winapi(
+                    "GetFinalPathNameByHandleW in canonicalize",
+                    err,
+                ));
+            }
+            log::info!("Size of fp is {},{}", size, err);
+            //Safety: Trust windows
+            unsafe { buf.set_len(size as usize) };
+
+            let fp = str_from_wide_str(buf.as_slice())?;
+            return Ok((fp, lps));
+        }
+        #[cfg(feature = "std")]
+        crate::Data::Str(s) => return canonicalize(&crate::Data::Path(std::path::Path::new(*s))),
+        #[cfg(feature = "std")]
+        crate::Data::Path(p) => {
+            use std::os::windows::ffi::OsStrExt;
+            let s = std::fs::canonicalize(p)?;
+            let tmp: Vec<u16> = s.as_os_str().encode_wide().collect();
+
+            let fp = str_from_wide_str(tmp.as_slice())?;
+            let lps = s
+                .file_name()
+                .map(|v| v.to_str().map(|x| x.to_string()))
+                .flatten();
+            return Ok((fp, lps));
+        }
+    }
+}
+
+#[cfg(not(feature = "std"))]
+//Fixme:stdless Not reliable
+fn read(file: &Data) -> Result<Vec<u8>> {
+    use winapi::um::fileapi::{CreateFileW, GetFileSizeEx, ReadFile};
+
+    let file = match file {
+        crate::Data::Str(s) => *s,
+    };
+    //Get File Handle
+    let mut filew = wide_str_from_str(file);
+    filew.push(0);
+    let filew = filew;
+    let r = unsafe {
+        CreateFileW(
+            filew.as_ptr(),
+            winapi::um::winnt::GENERIC_READ,
+            winapi::um::winnt::FILE_SHARE_READ
+                | winapi::um::winnt::FILE_SHARE_WRITE
+                | winapi::um::winnt::FILE_SHARE_DELETE,
+            core::ptr::null_mut(),
+            winapi::um::fileapi::OPEN_EXISTING,
+            winapi::um::winnt::FILE_ATTRIBUTE_NORMAL,
+            core::ptr::null_mut(),
+        )
+    };
+    if r == INVALID_HANDLE_VALUE {
+        return Err(crate::error::Error::from("CreateFileW in read"));
+    }
+    //Function for closing the File Handle again
+    let cleanup = || {
+        return if unsafe { CloseHandle(r) } == 0 {
+            Err(crate::error::Error::from("CloseHandle in read."))
+        } else {
+            Ok(())
+        };
+    };
+    //How much space do we need to read the file?
+    let mut size = winapi::um::winnt::LARGE_INTEGER::default();
+    if unsafe { GetFileSizeEx(r, &mut size as *mut winapi::um::winnt::LARGE_INTEGER) } == 0 {
+        let _ = cleanup();
+        return Err(crate::error::Error::from("GetFileSizeEx in read"));
+    }
+    let mut size = *unsafe { size.QuadPart() };
+    let mut read = 0;
+    log::info!("Requested read of {} byte file", size);
+    //Create a buffer
+    let mut file_contents = Vec::<u8>::with_capacity(0);
+    file_contents.reserve(size as usize);
+    //Read
+    while read < size {
+        let mut bytes_read: u32 = 0;
+        //we are not reading async, because we did not set FILE_FLAG_OVERLAPPED in the handle creation
+        let returnCode = unsafe {
+            ReadFile(
+                r,
+                file_contents.spare_capacity_mut().as_mut_ptr() as *mut winapi::ctypes::c_void,
+                size as u32,
+                &mut bytes_read as *mut u32,
+                core::ptr::null_mut(),
+            )
+        };
+        if returnCode == 0 {
+            let _ = cleanup();
+            return Err(crate::error::Error::from("ReadFile in read"));
+        }
+        read += bytes_read as i64;
+        log::info!("read {} bytes, and {} in total", bytes_read, read);
+    }
+    //Safety: Trust Windows
+    unsafe {
+        file_contents.set_len(read as usize);
+    }
+    cleanup()?;
+    Ok(file_contents)
+}
+#[cfg(feature = "std")]
+fn read(file: &Data<'_>) -> Result<Vec<u8>> {
+    let file = match file {
+        crate::Data::Str(v) => std::path::Path::new(v),
+        crate::Data::Path(p) => p,
+    };
+    std::fs::read(file).map_err(|x| x.into())
 }
 
 pub struct InjectWin<'a> {
@@ -62,18 +291,26 @@ impl<'a> Inject for InjectWin<'a> {
                 | PROCESS_QUERY_INFORMATION,
         )?;
         //Is the dll already injected?
-        if get_module(strip_path(self.inj.dll)?.as_str(), &proc).is_ok() {
-            return Err(Error::Unsupported(Some("dll already injected".to_string())));
+        let (path, dll_name) = canonicalize(&self.inj.dll)?;
+        {
+            match dll_name {
+                Some(name) => {
+                    if get_module(crate::Data::Str(name.as_str()), &proc).is_ok() {
+                        return Err(Error::Unsupported(Some("dll already injected")));
+                    }
+                }
+                None => return Err(crate::error::CustomError::DllPathNoFile.into()),
+            }
         }
 
         //Prepare Argument for LoadLibraryW
         //scope here, so Vec will get deleted after this
         let mem = {
-            let full_path: PathBuf = std::fs::canonicalize(self.inj.dll)?;
-            let path: Vec<u16> = full_path.as_os_str().encode_wide().chain(Some(0)).collect();
+            let mut full_path = wide_str_from_str(path.as_str());
+            full_path.push(0);
             let mut mempage =
-                mem::MemPage::new(&proc, path.len() * core::mem::size_of::<u16>(), false)?;
-            mempage.write(path.as_bytes())?;
+                mem::MemPage::new(&proc, full_path.len() * core::mem::size_of::<u16>(), false)?;
+            mempage.write(full_path.as_bytes())?;
             mempage
         };
         self.exec_fn_in_proc(&proc, "LoadLibraryW", mem)
@@ -91,18 +328,22 @@ impl<'a> Inject for InjectWin<'a> {
         )?;
         if Process::self_proc().is_under_wow()? && !proc.is_under_wow()? {
             return Err(crate::error::Error::Unsupported(Some(
-                "ejecting is not currently supported from a x86 binary targeting a x64 process."
-                    .to_string(),
+                "ejecting is not currently supported from a x86 binary targeting a x64 process.",
             )));
         }
 
-        let name = strip_path(self.inj.dll)?;
+        let name = canonicalize(&self.inj.dll)?.1;
+        let name = match name {
+            Some(name) => name,
+            None => return Err(crate::error::CustomError::DllPathNoFile.into()),
+        };
+        let name = name.as_str();
         // let (_path, base) = get_module(name.as_str(), &proc)?;
         let handle = get_module_in_pid(
             self.inj.pid,
             |m| {
                 if let Ok(v) = str_from_wide_str(&m.szModule) {
-                    if cmp(&name)(&&v) {
+                    if cmp(crate::Data::Str(name))(crate::Data::Str(v.as_str())) {
                         Some(m.hModule)
                     } else {
                         None
@@ -135,14 +376,20 @@ impl<'a> Inject for InjectWin<'a> {
 
     ///This Function will find all currently processes, with a given name.
     ///Even if no processes are found, an empty Vector should return.
-    fn find_pid<P: AsRef<Path>>(name: P) -> Result<Vec<u32>> {
-        let name = name.as_ref();
+    fn find_pid(name: crate::Data) -> Result<Vec<u32>> {
         Self::find_pid_selector(|p| {
-            return match str_from_wide_str(crate::trim_wide_str(p.szExeFile.to_vec()).as_slice()) {
-                Ok(str) => {
-                    crate::debug!("Checking {} against {}", str, name.to_string_lossy());
-                    return name.ends_with(str.as_str());
-                }
+            return match str_from_wide_str(crate::trim_wide_str::<true>(&p.szExeFile)) {
+                Ok(str) => match name {
+                    crate::Data::Str(s) => {
+                        crate::debug!("Checking {} against {}", str, s);
+                        return s.ends_with(str.as_str());
+                    }
+                    #[cfg(feature = "std")]
+                    crate::Data::Path(p) => {
+                        crate::debug!("Checking {} against {}", str, p.to_string_lossy());
+                        return p.ends_with(str.as_str());
+                    }
+                },
                 Err(e) => {
                     crate::warn!("Skipping check of process. Can't construct string, to compare against. Err:{:#?}",e);
                     false
@@ -173,13 +420,11 @@ impl<'a> InjectWin<'a> {
         if self.inj.pid == 0 {
             crate::warn!("Supplied id is 0. Will not inject, as it is not supported by windows.");
             return Err(Error::Unsupported(Some(
-                "PID 0 is an invalid target under windows.".to_string(),
+                "PID 0 is an invalid target under windows.",
             )));
         }
         if !mem.check_proc(proc) {
-            return Err(crate::error::Error::Io(std::io::Error::from(
-                std::io::ErrorKind::AddrNotAvailable,
-            )));
+            return Err(crate::error::CustomError::MempageInvalidProcess.into());
         }
 
         let self_proc = Process::self_proc();
@@ -200,7 +445,7 @@ impl<'a> InjectWin<'a> {
                 crate::warn!("This injection will use a slightly different method, than usually. This is normal, when the injector is x86, but the pid specified is a x64 process.\
 				We will be using ntdll methods. The ntdll.dll is technically not a public facing windows api.");
             } else {
-                return Err(Error::Unsupported(Some("Cannot continue injection. You are trying to inject from a x86 injector into a x64 application. That is unsupportable, without access to ntdll functions.".to_string())));
+                return Err(Error::Unsupported(Some("Cannot continue injection. You are trying to inject from a x86 injector into a x64 application. That is unsupportable, without access to ntdll functions.")));
             }
         };
 
@@ -211,23 +456,23 @@ impl<'a> InjectWin<'a> {
                 "Injecting a x64 dll, into a x86 exe is unsupported. Will not continue for now."
             );
             return Err(Error::Unsupported(Some(
-                "Injecting a x64 dll, into a x86 exe is unsupported.".to_string(),
+                "Injecting a x64 dll, into a x86 exe is unsupported.",
             )));
         } else if !dll_is_x64 && !pid_is_under_wow {
             crate::error!("Injecting a x86 dll, into a x64 exe is unsupported. Could this case be supported? Send a PR, if you think, you can make this work! Will NOT abort, but expect the dll-injection to fail");
             return Err(Error::Unsupported(Some(
-                "Injecting a x86 dll, into a x64 exe is unsupported.".to_string(),
+                "Injecting a x86 dll, into a x64 exe is unsupported.",
             )));
         }
         #[cfg(not(feature = "ntdll"))]
         if self_is_under_wow && !pid_is_under_wow {
             return Err(Error::Unsupported(Some(
-                "Cannot inject into a x64 Application without ntdll access.".to_string(),
+                "Cannot inject into a x64 Application without ntdll access.",
             )));
         }
 
         let entry_point = {
-            let (path, base) = get_module("KERNEL32.DLL", &proc)?;
+            let (path, base) = get_module(crate::Data::Str("KERNEL32.DLL"), &proc)?;
             base + get_dll_export(entry_fn, path)? as u64
         };
         crate::info!(
@@ -256,7 +501,7 @@ impl<'a> InjectWin<'a> {
                         crate::platforms::x86::exec(
                             va,
                             proc.get_proc(),
-                            std::ptr::null_mut(),
+                            core::ptr::null_mut(),
                             0,
                             0,
                             0,
@@ -272,16 +517,16 @@ impl<'a> InjectWin<'a> {
                         UniqueProcess: 0,
                         UniqueThread: 0,
                     };
-                    let mut t = std::ptr::null_mut();
+                    let mut t = core::ptr::null_mut();
                     let r = unsafe {
                         ntapi::ntrtl::RtlCreateUserThread(
                             proc.get_proc(),
-                            std::ptr::null_mut(),
+                            core::ptr::null_mut(),
                             0,
                             0,
                             0,
                             0,
-                            std::mem::transmute(entry_point as usize),
+                            core::mem::transmute(entry_point as usize),
                             mem.get_address(),
                             &mut t as winapi::shared::ntdef::PHANDLE,
                             core::mem::transmute(&mut c as ntapi::ntapi_base::PCLIENT_ID64),
@@ -310,9 +555,9 @@ impl<'a> InjectWin<'a> {
             let thread = unsafe {
                 thread::Thread::new(CreateRemoteThread(
                     proc.get_proc(),
-                    std::ptr::null_mut(),
+                    core::ptr::null_mut(),
                     0,
-                    Some(std::mem::transmute(entry_point as usize)),
+                    Some(core::mem::transmute(entry_point as usize)),
                     mem.get_address(),
                     0,
                     &mut thread_id as *mut u32,
@@ -385,7 +630,7 @@ impl<'a> InjectWin<'a> {
     ///This function will return, whether a dll is x64, or x86.
     ///The Return value will be Ok(true), if the dll is x64(64bit), and Ok(false), if the dll is x86(32bit).
     fn get_is_dll_x64(&self) -> Result<bool> {
-        let dll = std::fs::read(self.inj.dll)?;
+        let dll = read(&self.inj.dll)?;
         return match pelite::pe64::PeFile::from_bytes(dll.as_slice()) {
             Ok(_) => Ok(true),
             Err(pelite::Error::PeMagic) => pelite::pe32::PeFile::from_bytes(dll.as_slice())
@@ -429,11 +674,11 @@ where
         th32ProcessID: 0, //The identifier of the process whose modules are to be examined.
         GlblcntUsage: 0, //The load count of the module, which is not generally meaningful, and usually equal to 0xFFFF.
         ProccntUsage: 0, //The load count of the module (same as GlblcntUsage), which is not generally meaningful, and usually equal to 0xFFFF.
-        modBaseAddr: std::ptr::null_mut(), //The base address of the module in the context of the owning process.
-        modBaseSize: 0,                    //The size of the module, in bytes.
-        hModule: std::ptr::null_mut(), //A handle to the module in the context of the owning process.
+        modBaseAddr: core::ptr::null_mut(), //The base address of the module in the context of the owning process.
+        modBaseSize: 0,                     //The size of the module, in bytes.
+        hModule: core::ptr::null_mut(), //A handle to the module in the context of the owning process.
         szModule: [0; MAX_MODULE_NAME32 + 1], //The module name.
-        szExePath: [0; MAX_PATH],      //The module path.
+        szExePath: [0; MAX_PATH],       //The module path.
     };
     check_ptr!(
         Module32FirstW(snap_modules, &mut module_entry as *mut MODULEENTRY32W),
@@ -454,16 +699,16 @@ where
 }
 ///This gets the directory, where windows files reside. Usually C:\Windows
 fn get_windir<'a>() -> Result<&'a String> {
-    static WINDIR: once_cell::sync::OnceCell<String> = once_cell::sync::OnceCell::new();
+    static WINDIR: once_cell::race::OnceBox<String> = once_cell::race::OnceBox::new();
     let str = WINDIR.get_or_try_init(||{
-		let i=check_ptr!(GetSystemWindowsDirectoryW(std::ptr::null_mut(),0),|v|v==0);
+		let i=check_ptr!(GetSystemWindowsDirectoryW(core::ptr::null_mut(),0),|v|v==0);
 		let mut str_buf:Vec<u16> = Vec::with_capacity( i as usize);
 		let i2=check_ptr!(GetSystemWindowsDirectoryW(str_buf.as_mut_ptr(),i),|v|v==0);
         assert!(i2<=i,"GetSystemWindowsDirectoryA says, that {} bytes are needed, but then changed it's mind. Now {} bytes are needed.",i,i2);
 		unsafe{str_buf.set_len(i2 as usize)};
 		let string = str_from_wide_str(str_buf.as_slice())?;
         crate::debug!("Windir is {},{},{}",string,i,i2);
-		Ok(string)
+		Ok(alloc::boxed::Box::new(string))
 	})?;
     crate::debug!("Windir is '{}'", str);
     Ok(str)
@@ -474,12 +719,12 @@ fn get_windir<'a>() -> Result<&'a String> {
 ///name specifies, what module to look for.
 ///f processes the other input from other functions
 //todo: does this bring a performance benefit?
-fn predicate<T, F, C>(f: T, cmp: C) -> impl Fn(F, Vec<u16>) -> Option<(String, u64)>
+fn predicate<T, F, C>(f: T, cmp: C) -> impl Fn(F, &[u16]) -> Option<(String, u64)>
 where
     T: Fn(F) -> u64,
     C: Fn(&String) -> bool,
 {
-    move |i2, v| match str_from_wide_str(crate::trim_wide_str(v).as_slice()) {
+    move |i2, v| match str_from_wide_str(crate::trim_wide_str::<true>(v)) {
         Ok(s) => {
             if cmp(&s) {
                 Some((s, f(i2)))
@@ -490,18 +735,11 @@ where
         Err(_) => None,
     }
 }
-///Returns a function, which compares a &str against a name
-//todo: make the second function call better
-fn cmp<P: AsRef<Path>>(name: P) -> impl Fn(&dyn AsRef<Path>) -> bool {
-    move |s| {
-        return name.as_ref().ends_with(&s) || s.as_ref().ends_with(&name);
-    }
-}
 
 ///Gets the base address of where a dll is loaded within a process.
 ///The dll is identified by name. name is checked against the whole file name.
 ///if the process has a pseudo-handle, the ntdll methods will not run.
-fn get_module<P: AsRef<Path>>(name: P, proc: &Process) -> Result<(String, u64)> {
+fn get_module(name: crate::Data, proc: &Process) -> Result<(String, u64)> {
     let cmp = cmp(name);
     let ntdll = !process::Process::self_proc().is_under_wow()? || proc.is_under_wow()?;
     #[cfg(test)]
@@ -510,10 +748,10 @@ fn get_module<P: AsRef<Path>>(name: P, proc: &Process) -> Result<(String, u64)> 
         match get_module_in_pid(
             proc.get_pid(),
             |m| {
-                predicate(|m: &MODULEENTRY32W| m.modBaseAddr as u64, |x| (&cmp)(&x))(
-                    m,
-                    m.szExePath.to_vec(),
-                )
+                predicate(
+                    |m: &MODULEENTRY32W| m.modBaseAddr as u64,
+                    |x| (&cmp)(crate::Data::Str(x.as_str())),
+                )(m, &m.szExePath)
             },
             None,
         ) {
@@ -529,13 +767,14 @@ fn get_module<P: AsRef<Path>>(name: P, proc: &Process) -> Result<(String, u64)> 
     } else {
         crate::warn!("We are injecting from a x86 injector into a x64 target executable. ");
         #[cfg(not(feature = "ntdll"))]
-        return Err(Error::Unsupported(Some("No Ntdll support enabled. Cannot get module. Target process is x64, but we are compiled as x86.".to_string())));
+        return Err(Error::Unsupported(Some("No Ntdll support enabled. Cannot get module. Target process is x64, but we are compiled as x86.")));
     }
     #[cfg(feature = "ntdll")]
     {
         crate::info!("Trying get_module_in_proc as fallback method.");
         unsafe {
-            return ntdll::NTDLL::new()?.get_module_in_proc(
+            let ntdll = ntdll::NTDLL::new()?;
+            return ntdll.get_module_in_proc(
                 proc,
                 predicate(
                     |w: pelite::Wrap<LDR_DATA_TABLE_ENTRY32, ntdll::LDR_DATA_TABLE_ENTRY64>| match w
@@ -543,7 +782,7 @@ fn get_module<P: AsRef<Path>>(name: P, proc: &Process) -> Result<(String, u64)> 
                         pelite::Wrap::T32(w) => w.DllBase as u64,
                         pelite::Wrap::T64(w) => w.DllBase as u64,
                     },
-                    |x| (&cmp)(&x),
+                    |x| (&cmp)(crate::Data::Str(x.as_str())),
                 ),
             );
         }
@@ -564,12 +803,16 @@ fn get_dll_export(name: &str, path: String) -> Result<u32> {
     } else {
         path
     };
+    log::trace!(r#"Path is "{}""#, path);
+    let path = canonicalize(&crate::Data::Str(path.as_str()))?.0;
+    log::trace!(r#"Canonical Path is "{}""#, path);
     debug_assert!(
-        std::fs::canonicalize(&path).is_ok(),
+        canonicalize(&crate::Data::Str(path.as_str())).is_ok(),
         "parsing {} failed",
         path,
     );
-    let k32 = std::fs::read(&path)?;
+    let k32 = read(&crate::Data::Str(path.as_str()))?;
+    log::trace!("{:#x?}", &k32.as_slice()[0..32]);
     let dll_parsed = pelite::PeFile::from_bytes(k32.as_slice())?;
     let rva = dll_parsed.get_export_by_name(name)?.symbol().unwrap();
     crate::trace!("Found {} at rva:{} in dll {}", name, rva, path);
@@ -578,6 +821,12 @@ fn get_dll_export(name: &str, path: String) -> Result<u32> {
 
 #[cfg(test)]
 pub mod test {
+    extern crate std;
+    use alloc::string::ToString;
+    use std::prelude::*;
+    use std::println;
+    use std::vec::Vec;
+
     use crate::error::Error;
     use crate::platforms::windows::InjectWin;
     use crate::{Inject, Result};
@@ -595,7 +844,7 @@ pub mod test {
     use winapi::um::winbase::CREATE_NEW_CONSOLE;
     use winapi::um::winnt::PROCESS_ALL_ACCESS;
 
-    thread_local! {
+    std::thread_local! {
         pub(in super) static FNS_M:FNS=FNS::default();
     }
     #[derive(Debug)]
@@ -619,7 +868,11 @@ pub mod test {
         #[cfg(not(target_pointer_width = "32"))]
         let path = "cmd.exe";
         #[cfg(target_pointer_width = "32")]
-        let path = format!("{}\\Sysnative\\cmd.exe", super::get_windir().unwrap());
+        let path = {
+            let mut path = super::get_windir().unwrap().clone();
+            path.push_str(r"\Sysnative\cmd.exe");
+            path
+        };
 
         let c = std::process::Command::new(path)
             .creation_flags(CREATE_NEW_CONSOLE)
@@ -640,16 +893,70 @@ pub mod test {
     ///Tests, that create_cmd does not panic, and that the drop will work.
     ///The decompiler tells some interesting stuff. I would rather have it tested here.
     fn test_create_cmd() {
+        //we need to bind process to _a here, so that drop doesn't get called instantly.
+        //Dropping Process will close the child handle, which isn't what we want
         let (mut c, _a) = create_cmd();
-        //todo: Why do I need to bind process to _a. Why can I not use _?
         c.kill().unwrap();
+    }
+
+    #[test]
+    fn canonicalise() -> Result<()> {
+        simple_logger::init().ok();
+        let windir = super::get_windir()?;
+        let mut path = windir.clone();
+        path.push_str(r"\System32\cmd.exe");
+
+        log::info!("{}", path);
+
+        //On 32-bit wow redirects the path
+        #[cfg(target_pointer_width = "32")]
+        let path = path.replace("System32", "SysWOW64");
+
+        //non-std
+        {
+            let (fp, lps) = super::canonicalize(&crate::Data::Str(path.as_str()))?;
+            let fp = fp.trim_start_matches(r"\\?\");
+            assert_eq!(fp, path);
+            assert_eq!(lps, Some("cmd.exe".to_string()));
+        }
+        //std
+        #[cfg(all(feature = "std", test))]
+        {
+            let (fp, lps) = super::canonicalize(&crate::Data::Path(std::path::Path::new(&path)))?;
+            assert_eq!(lps, Some("cmd.exe".to_string()));
+            let fp = fp.trim_start_matches(r"\\?\");
+
+            assert_eq!(fp, path);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn read() -> Result<()> {
+        simple_logger::SimpleLogger::new().init().ok();
+        let windir = super::get_windir()?;
+        let mut path = windir.clone();
+        path.push_str(r"\System32\cmd.exe");
+
+        log::info!("{}", path);
+
+        let cstd = std::fs::read(&path).unwrap();
+        log::info!("STD read size is {}", cstd.len());
+        let c = super::read(&crate::Data::Str(path.as_str()))?;
+        log::info!("self read size is {}", c.len());
+        //assert_eq!(c,cstd,"std and self read result is not same");
+        assert!(c == cstd);
+        Ok(())
     }
 
     #[test]
     fn get_windir() -> Result<()> {
         let r = super::get_windir();
         assert!(r.is_ok(), "get_windir returned Err({})", r.unwrap_err());
-        let f = std::fs::read_dir(r.unwrap());
+        let r = r.unwrap();
+        let env_var_windir = std::env::var("WINDIR").unwrap();
+        assert_eq!(r, &env_var_windir);
+        let f = std::fs::read_dir(r);
         assert!(
             f.is_ok(),
             "Couldn't read Windows dir. Error is {}",
@@ -683,39 +990,12 @@ pub mod test {
     }
 
     #[test]
-    fn cmp() {
-        //Simple case
-        {
-            let f = super::cmp("test");
-            assert!(f(&"test"));
-            assert!(!f(&"not test"));
-            let f = super::cmp("KERNEL32.DLL");
-            assert!(f(&&"C:\\Windows\\System32\\KERNEL32.DLL".to_string()));
-            let f = super::cmp("ntdll.dll");
-            assert!(f(&&"C:\\Windows\\SYSTEM32\\ntdll.dll".to_string()));
-        }
-        //complicated paths
-        {
-            let f = vec![
-                super::cmp("C:\\this\\is\\a\\test\\path\\with\\a\\dir\\at\\the\\end\\"),
-                super::cmp("C:\\this\\is\\a\\test\\path\\with\\a\\dir\\at\\the\\end"),
-                super::cmp("C:/this/is/a/test/path/with/a/dir/at/the/end/"),
-                super::cmp("C:/this/is/a/test/path/with/a/dir/at/the/end"),
-            ];
-            for f in f {
-                assert!(f(&"end"));
-                assert!(f(&"the\\end"));
-                assert!(f(&"the/end"));
-                assert!(f(&"at/the\\end"));
-                assert!(f(&"at\\the/end"));
-            }
-        }
-    }
-
-    #[test]
     fn str_from_wide_str() -> Result<()> {
         //test empty string
-        assert_eq!(super::str_from_wide_str(vec![].as_slice())?, "".to_string());
+        assert_eq!(
+            super::str_from_wide_str(std::vec![].as_slice())?,
+            "".to_string()
+        );
         //Test just about every special char I could think of.
         let wide_str: Vec<u16> = OsString::from(crate::test::STR.to_string())
             .as_os_str()
@@ -732,10 +1012,10 @@ pub mod test {
     #[test]
     fn predicate() {
         //If nothing matches, we should get NONE back
-        assert_eq!(super::predicate(|_| 0, |_| false)((), vec![]), None);
+        assert_eq!(super::predicate(|_| 0, |_| false)((), &[]), None);
         //If something matches, we should get a result
         assert_eq!(
-            super::predicate(|_| 0, |_| true)((), vec![]),
+            super::predicate(|_| 0, |_| true)((), &[]),
             Some(("".to_string(), 0))
         );
     }
@@ -748,8 +1028,8 @@ pub mod test {
                 |m| {
                     super::predicate(
                         |m: &MODULEENTRY32W| m.modBaseAddr as u64,
-                        |x| super::cmp("ntdll.dll")(&x),
-                    )(m, m.szModule.to_vec())
+                        |x| super::cmp(crate::Data::Str("ntdll.dll"))(crate::Data::Str(x.as_str())),
+                    )(m, &m.szModule)
                 },
                 None,
             )
@@ -782,25 +1062,29 @@ pub mod test {
     fn get_module() -> Result<()> {
         //self test
         {
-            let r = super::get_module("ntdll.dll", super::process::Process::self_proc());
+            let r = super::get_module(
+                crate::Data::Str("ntdll.dll"),
+                &super::process::Process::self_proc(),
+            );
             assert!(r.is_ok(), "normal self get_module err:{}", r.unwrap_err());
         }
         let (mut c, cp) = create_cmd();
         //other test
         {
-            let r = super::get_module("ntdll.dll", &cp);
+            let r = super::get_module(crate::Data::Str("ntdll.dll"), &cp);
             if cfg!(target_pointer_width = "64") || cfg!(feature = "ntdll") {
                 assert!(r.is_ok(), "normal other get_module err:{}", r.unwrap_err());
             } else {
-                assert_eq!(r.unwrap_err(),Error::Unsupported(Some("No Ntdll support enabled. Cannot get module. Target process is x64, but we are compiled as x86.".to_string())));
+                assert_eq!(r.unwrap_err(),Error::Unsupported(Some("No Ntdll support enabled. Cannot get module. Target process is x64, but we are compiled as x86.")));
             }
         }
-        #[cfg(feature = "ntdll")]
+        // #[cfg(feature = "ntdll")]
+        #[cfg(target_pointer_width = "0")] //FIXME: Fix ntdll stuff
         {
             let proc = super::process::Process::new(std::process::id(), PROCESS_ALL_ACCESS)?;
             FNS_M.with(|x| x.get_module.set(true));
-            let r = super::get_module("KERNEL32.DLL", &proc);
-            let r1 = super::get_module("KERNEL32.DLL", &cp);
+            let r = super::get_module(crate::Data::Str("KERNEL32.DLL"), &proc);
+            let r1 = super::get_module(crate::Data::Str("KERNEL32.DLL"), &cp);
             FNS_M.with(|x| x.get_module.set(false));
             assert!(r.is_ok(), "ntdll self get_module:{}", r.unwrap_err());
             assert!(r1.is_ok(), "ntdll other get_module:{}", r.unwrap_err());
@@ -811,8 +1095,17 @@ pub mod test {
 
     #[test]
     fn find_pid() -> Result<()> {
-        let exe = std::env::current_exe()?;
-        let i = InjectWin::find_pid(exe.as_path());
+        let exe = std::env::current_exe().map_err(|_| crate::error::Error::Unsupported(None))?;
+        #[cfg(feature = "std")]
+        {
+            let i = InjectWin::find_pid(crate::Data::Path(exe.as_path()));
+            assert!(i.is_ok(), "{}", i.unwrap_err());
+            assert!(
+                i?.contains(&std::process::id()),
+                "The result did not contain our current process id."
+            );
+        }
+        let i = InjectWin::find_pid(crate::Data::Str(exe.as_os_str().to_str().unwrap()));
         assert!(i.is_ok(), "{}", i.unwrap_err());
         assert!(
             i?.contains(&std::process::id()),

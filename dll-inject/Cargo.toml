@@ -6,8 +6,14 @@ publish = false
 
 [lib]
 crate-type = ["staticlib"]
+required-features = ["alloc"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 inject-lib = {path="../inject-lib",features=["x86tox64"]}
 
+[features]
+default=["alloc"]
+alloc=["inject-lib/alloc"]
+std=["inject-lib/std"]
+none=[]

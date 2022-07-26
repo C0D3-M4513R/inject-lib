@@ -5,7 +5,7 @@ on:
     branches: [staging,trying,dev,main]
     # Remove the line above to run when pushing to master
   pull_request:
-    branches: [ main ]
+    branches: [ main, dev]
   workflow_dispatch:
 env:
   CARGO_TERM_COLOR: always
@@ -22,6 +22,8 @@ jobs:
     runs-on: windows-latest
     strategy:
       matrix:
+        profile: ["dev","release"]
+        feature: ["none","std"]
         target: [i686-pc-windows-msvc, i686-pc-windows-gnu ,x86_64-pc-windows-msvc, x86_64-pc-windows-gnu]
     steps:
       - uses: actions/checkout@v3
@@ -36,53 +38,33 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --target ${{ matrix.target }} --profile release --package dll-inject
+          args: --target ${{ matrix.target }} --profile ${{ matrix.profile }} --feature ${{ matrix.feature }} --package dll-inject
       - name: generate bindings
         working-directory: ./dll-inject
         run: cbindgen --config cbindgen.toml --crate dll-inject --output dll-inject.h
 
       - name: list dependencies
-        working-directory: ./dll-inject/src
-        run: rustc empty.rs --crate-type staticlib --print native-static-libs
+        uses: actions-rs/cargo@v1
+        working-directory: ./dll-inject/
+        with:
+          command: rustc
+          args: -p dll-inject --features ${{ matrix.feature }} -- --print native-static-libs
 
       - uses: actions/upload-artifact@v3
+        name: upload release artifact
+        if: ${{ matrix.profile == 'release' }}
         with:
-          name: dll-inject-${{ matrix.target}}-release
+          name: dll-inject-${{ matrix.target}}-release-${{ matrix.feature }}
           path: |
             dll-inject/dll-inject.h
             target/${{ matrix.target }}/release/libdll_inject.*
             target/${{ matrix.target }}/release/dll_inject.*
 
-  build-dev:
-    runs-on: windows-latest
-    strategy:
-      matrix:
-        target: [i686-pc-windows-msvc, i686-pc-windows-gnu ,x86_64-pc-windows-msvc, x86_64-pc-windows-gnu]
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          target: ${{ matrix.target }}
-      - uses: actions-rs/cargo@v1
-        with:
-          command: install
-          args: cbindgen
-      - uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: ${{ matrix.args }} --target ${{ matrix.target }} --profile dev --package dll-inject
-      - name: generate bindings
-        working-directory: ./dll-inject
-        run: cbindgen --config cbindgen.toml --crate dll-inject --output dll-inject.h
-
-      - name: list dependencies
-        working-directory: ./dll-inject/src
-        run: rustc empty.rs --crate-type staticlib --print native-static-libs
-
       - uses: actions/upload-artifact@v3
+        name: upload dev artifact
+        if: ${{ matrix.profile == 'dev' }}
         with:
-          name: dll-inject-${{ matrix.target}}-dev
+          name: dll-inject-${{ matrix.target}}-dev-${{ matrix.feature }}
           path: |
             dll-inject/dll-inject.h
             target/${{ matrix.target }}/debug/dll_inject.*

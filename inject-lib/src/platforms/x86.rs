@@ -145,7 +145,6 @@ pub(crate) unsafe fn exec(
 #[cfg(test)]
 mod test {
     use crate::Result;
-    use std::ptr::null_mut;
 
     //defines a noop function
     core::arch::global_asm!(".code64", "nopx64:", "enter 0,0", "leave", "ret");
@@ -156,7 +155,17 @@ mod test {
         unsafe {
             let a: usize;
             core::arch::asm!("lea {},nopx64",out(reg) a,options(preserves_flags,nomem,nostack));
-            super::exec(a as u64, null_mut(), null_mut(), 0, 0, 0, 0, 0, 0)?;
+            super::exec(
+                a as u64,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )?;
         }
         Ok(())
     }

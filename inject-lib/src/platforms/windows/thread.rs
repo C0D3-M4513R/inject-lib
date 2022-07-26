@@ -1,8 +1,8 @@
 use super::macros::err;
 use crate::error::CustomError;
 use crate::Result;
+use core::ops::Deref;
 use log::{info, trace};
-use std::ops::Deref;
 use winapi::shared::minwindef::FALSE;
 use winapi::shared::ntdef::HANDLE;
 use winapi::um::synchapi::WaitForSingleObject;
@@ -61,7 +61,7 @@ impl Drop for Thread {
         trace!("Cleaning Thread Handle");
         if unsafe { winapi::um::handleapi::CloseHandle(self.thread) } == FALSE {
             log::error!("Error during cleanup!");
-            err::<String>("CloseHandle of Thread".to_string());
+            err("CloseHandle of Thread");
         }
     }
 }
