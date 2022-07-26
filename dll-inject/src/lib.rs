@@ -1,8 +1,7 @@
 #![cfg(target_family = "windows")]
 extern crate inject_lib;
 use inject_lib::error::Error;
-use inject_lib::Inject;
-use inject_lib::Injector;
+use inject_lib::{Inject,Injector,Data};
 use std::ffi::{c_void, CStr, CString};
 use std::ops::Add;
 use std::os::raw::c_char;
@@ -34,7 +33,7 @@ pub extern "C" fn inject(pid: u32, dll: *mut u8, len: usize, wait: bool) -> i16 
         return -2;
     }
     let dll = unsafe { dll.unwrap_unchecked() }; //Safety: checked and handled above;
-    let i = Injector::new(dll.as_str(), pid);
+    let i = Injector::new(Data::Str(dll.as_str()), pid);
     let r = i.inject(wait).inject();
     if let Err(e) = r {
         eprintln!("inject-lib: ERROR: {}", e);
@@ -54,7 +53,7 @@ pub extern "C" fn eject(pid: u32, dll: *mut u8, len: usize, wait: bool) -> i16 {
         return -2;
     }
     let dll = unsafe { dll.unwrap_unchecked() }; //Safety: checked and handled above;
-    let i = Injector::new(dll.as_str(), pid);
+    let i = Injector::new(Data::Str(dll.as_str()), pid);
     let r = i.inject(wait).eject();
     if let Err(e) = r {
         eprintln!("inject-lib: ERROR: {}", e);
@@ -85,7 +84,7 @@ pub extern "C" fn find_pid(name: *mut u8, len: usize) -> FindPid {
         };
     }
     let name = unsafe { name.unwrap_unchecked() }; //Safety: checked and handled above;
-    let vec = Injector::find_pid(name.as_str());
+    let vec = Injector::find_pid(Data::Str(name.as_str()));
     if let Ok(vec) = vec {
         let v = vec.leak();
         eprintln!("{:x?}", v.as_mut_ptr());
