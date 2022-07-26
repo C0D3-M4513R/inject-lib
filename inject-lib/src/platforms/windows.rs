@@ -868,12 +868,12 @@ pub mod test {
     }
 
     #[test]
-    #[ignore]
     ///Tests, that create_cmd does not panic, and that the drop will work.
     ///The decompiler tells some interesting stuff. I would rather have it tested here.
     fn test_create_cmd() {
+        //we need to bind process to _a here, so that drop doesn't get called instantly.
+        //Dropping Process will close the child handle, which isn't what we want
         let (mut c, _a) = create_cmd();
-        //todo: Why do I need to bind process to _a. Why can I not use _?
         c.kill().unwrap();
     }
 
@@ -996,7 +996,6 @@ pub mod test {
     }
 
     #[test]
-    #[ignore]
     fn get_module_in_pid() -> Result<()> {
         let test = |id: u32| {
             super::get_module_in_pid(
@@ -1035,7 +1034,6 @@ pub mod test {
     }
 
     #[test]
-    #[ignore]
     fn get_module() -> Result<()> {
         //self test
         {
@@ -1052,7 +1050,8 @@ pub mod test {
                 assert_eq!(r.unwrap_err(),Error::Unsupported(Some("No Ntdll support enabled. Cannot get module. Target process is x64, but we are compiled as x86.")));
             }
         }
-        #[cfg(feature = "ntdll")]
+        // #[cfg(feature = "ntdll")]
+        #[cfg(target_pointer_width = "0")]//FIXME: Fix ntdll stuff
         {
             let proc = super::process::Process::new(std::process::id(), PROCESS_ALL_ACCESS)?;
             FNS_M.with(|x| x.get_module.set(true));
