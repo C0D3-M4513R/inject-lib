@@ -479,7 +479,7 @@ impl<'a> InjectWin<'a> {
                         crate::platforms::x86::exec(
                             va,
                             proc.get_proc(),
-                            std::ptr::null_mut(),
+                            core::ptr::null_mut(),
                             0,
                             0,
                             0,
@@ -846,7 +846,11 @@ pub mod test {
         #[cfg(not(target_pointer_width = "32"))]
         let path = "cmd.exe";
         #[cfg(target_pointer_width = "32")]
-        let path = format!("{}\\Sysnative\\cmd.exe", super::get_windir().unwrap());
+        let path = {
+            let mut path=super::get_windir().unwrap().clone();
+            path.push_str(r"\Sysnative\cmd.exe");
+            path
+        };
 
         let c = std::process::Command::new(path)
             .creation_flags(CREATE_NEW_CONSOLE)
@@ -882,17 +886,24 @@ pub mod test {
 
         log::info!("{}",path);
 
+        //On 32-bit wow redirects the path
+        #[cfg(target_pointer_width = "32")]
+        let path = path.replace("System32","SysWOW64");
+
         //non-std
         {
             let (fp,lps) = super::canonicalize(&crate::Data::Str(path.as_str()))?;
-            assert_eq!(std::path::Path::new(&fp),std::fs::canonicalize(path).unwrap().as_path());
+            let fp=fp.trim_start_matches(r"\\?\");
+            assert_eq!(fp,path);
             assert_eq!(lps,Some("cmd.exe".to_string()));
         }
         //std
         #[cfg(all(feature = "std",test))]
         {
-            let (fp,lps) = super::canonicalize(&crate::Data::Path(std::path::Path::new(path)))?;
+            let (fp,lps) = super::canonicalize(&crate::Data::Path(std::path::Path::new(&path)))?;
             assert_eq!(lps,Some("cmd.exe".to_string()));
+            let fp=fp.trim_start_matches(r"\\?\");
+
             assert_eq!(fp,path);
         }
         Ok(())
