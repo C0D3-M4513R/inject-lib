@@ -25,7 +25,7 @@
 // #![feature(strict_provenance)]
 // #![warn(lossy_provenance_casts)]
 #![warn(missing_docs)]
-#![cfg_attr(not(feature = "std"),no_std)]
+#![cfg_attr(not(feature = "std"), no_std)]
 #[cfg(feature = "alloc")]
 extern crate alloc;
 #[cfg(not(feature = "alloc"))]
@@ -45,7 +45,7 @@ pub struct Injector<'a> {
     pub pid: u32,
 }
 
-pub(crate) type Result<T,V=error::Error> = core::result::Result<T, V>;
+pub(crate) type Result<T, V = error::Error> = core::result::Result<T, V>;
 pub(crate) use log::{debug, error, info, trace, warn};
 
 ///Holds all error types
@@ -63,26 +63,26 @@ pub trait Inject {
 }
 ///Data can be a Path(if we have std), or a String.
 ///Data will get handled differently in no_std and std scenarios
-#[derive(Debug,Copy,Clone,PartialEq,Eq,PartialOrd,Ord)]
-pub enum Data<'a>{
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Data<'a> {
     ///This a Path as a String
     Str(&'a str),
     ///This is a Path encoded as a Path std object
     #[cfg(feature = "std")]
-    Path(&'a std::path::Path)
+    Path(&'a std::path::Path),
 }
-impl<'a> Data<'a>{
-    fn get_str(&self)->Option<&'a str>{
+impl<'a> Data<'a> {
+    fn get_str(&self) -> Option<&'a str> {
         match self {
-            Data::Str(a)=>Some(a),
-            _=>None,
+            Data::Str(a) => Some(a),
+            _ => None,
         }
     }
     #[cfg(feature = "std")]
-    fn get_path(&self)->Option<&'a std::path::Path>{
+    fn get_path(&self) -> Option<&'a std::path::Path> {
         match self {
-            Data::Path(a)=>Some(a),
-            _=>None,
+            Data::Path(a) => Some(a),
+            _ => None,
         }
     }
 }
@@ -138,51 +138,45 @@ impl<'a> Default for Injector<'a> {
 ///This has a worst case performance of o(n).
 ///if fast==true, the data MUST only contain NULL-values at the end of the string O(log n)
 ///else O(n)
-pub fn trim_wide_str<const FAST:bool>(v: &[u16]) -> &[u16] {
-    let i= {
+pub fn trim_wide_str<const FAST: bool>(v: &[u16]) -> &[u16] {
+    let i = {
         if FAST {
-            v.partition_point(|x|*x!=0)
-        }else{
-            let mut len=v.len();
-            while v[len-1] == 0 {
-                len-=1;
+            v.partition_point(|x| *x != 0)
+        } else {
+            let mut len = v.len();
+            while v[len - 1] == 0 {
+                len -= 1;
             }
             len
         }
     };
-    let (out,_) = v.split_at(i);
+    let (out, _) = v.split_at(i);
     return out;
 }
 
 ///Returns a function, which compares [crate::Data] against some other [crate::Data].
 ///If in no_std enviromenmt, the comparison is affected by forward-slash vs back-slash
 //todo: make the second function call better
-fn cmp<'a>(name: crate::Data<'a>) -> impl Fn(crate::Data<'_>) -> bool +'a {
+fn cmp<'a>(name: crate::Data<'a>) -> impl Fn(crate::Data<'_>) -> bool + 'a {
     move |s| {
-        return match name{
-            crate::Data::Str(s2)=>{
-                match s{
-                    crate::Data::Str(s)=>{s2.ends_with(s) || s.ends_with(s2)}
-                    #[cfg(feature = "std")]
-                    crate::Data::Path(p)=>{
-                        let p1=std::path::Path::new(s2);
-                        p1.ends_with(p) || p.ends_with(p1)
-                    }
+        return match name {
+            crate::Data::Str(s2) => match s {
+                crate::Data::Str(s) => s2.ends_with(s) || s.ends_with(s2),
+                #[cfg(feature = "std")]
+                crate::Data::Path(p) => {
+                    let p1 = std::path::Path::new(s2);
+                    p1.ends_with(p) || p.ends_with(p1)
                 }
-            }
+            },
             #[cfg(feature = "std")]
-            crate::Data::Path(p2)=>{
-                match s{
-                    crate::Data::Str(s)=>{
-                        let p1=std::path::Path::new(s);
-                        p1.ends_with(p2) || p2.ends_with(p1)
-                    }
-                    #[cfg(feature = "std")]
-                    crate::Data::Path(p)=>{
-                        p.ends_with(p2) || p2.ends_with(p)
-                    }
+            crate::Data::Path(p2) => match s {
+                crate::Data::Str(s) => {
+                    let p1 = std::path::Path::new(s);
+                    p1.ends_with(p2) || p2.ends_with(p1)
                 }
-            }
+                #[cfg(feature = "std")]
+                crate::Data::Path(p) => p.ends_with(p2) || p2.ends_with(p),
+            },
         };
     }
 }
@@ -239,7 +233,7 @@ mod test {
     #[test]
     fn set_dll() {
         let mut inj = super::Injector::default();
-        let dll=crate::Data::Str(STR);
+        let dll = crate::Data::Str(STR);
         inj.set_dll(dll);
         assert_eq!(inj.dll, dll, "Setter did not correctly set the dll string");
     }
@@ -269,10 +263,18 @@ mod test {
         #[cfg(feature = "std")]
         {
             let f = std::vec![
-                super::cmp(crate::Data::Path(std::path::Path::new(r"C:\this\is\a\test\path\with\a\dir\at\the\end\"))),
-                super::cmp(crate::Data::Path(std::path::Path::new(r"C:\this\is\a\test\path\with\a\dir\at\the\end"))),
-                super::cmp(crate::Data::Path(std::path::Path::new("C:/this/is/a/test/path/with/a/dir/at/the/end/"))),
-                super::cmp(crate::Data::Path(std::path::Path::new("C:/this/is/a/test/path/with/a/dir/at/the/end"))),
+                super::cmp(crate::Data::Path(std::path::Path::new(
+                    r"C:\this\is\a\test\path\with\a\dir\at\the\end\"
+                ))),
+                super::cmp(crate::Data::Path(std::path::Path::new(
+                    r"C:\this\is\a\test\path\with\a\dir\at\the\end"
+                ))),
+                super::cmp(crate::Data::Path(std::path::Path::new(
+                    "C:/this/is/a/test/path/with/a/dir/at/the/end/"
+                ))),
+                super::cmp(crate::Data::Path(std::path::Path::new(
+                    "C:/this/is/a/test/path/with/a/dir/at/the/end"
+                ))),
             ];
             for f in f {
                 assert!(f(crate::Data::Str("end")));
@@ -288,21 +290,29 @@ mod test {
             }
         }
         {
-            let f = super::cmp(crate::Data::Str(r"C:\this\is\a\test\path\with\a\dir\at\the\end\"));
+            let f = super::cmp(crate::Data::Str(
+                r"C:\this\is\a\test\path\with\a\dir\at\the\end\",
+            ));
             assert!(!f(crate::Data::Str("end")));
             assert!(!f(crate::Data::Str(r"the\end")));
             assert!(f(crate::Data::Str(r"end\")));
-            let f = super::cmp(crate::Data::Str(r"C:\this\is\a\test\path\with\a\dir\at\the\end"));
+            let f = super::cmp(crate::Data::Str(
+                r"C:\this\is\a\test\path\with\a\dir\at\the\end",
+            ));
             assert!(f(crate::Data::Str("end")));
             assert!(f(crate::Data::Str(r"the\end")));
             assert!(!f(crate::Data::Str(r"end\")));
             assert!(!f(crate::Data::Str(r"the\end\")));
-            let f = super::cmp(crate::Data::Str("C:/this/is/a/test/path/with/a/dir/at/the/end/"));
+            let f = super::cmp(crate::Data::Str(
+                "C:/this/is/a/test/path/with/a/dir/at/the/end/",
+            ));
             assert!(f(crate::Data::Str("end/")));
             assert!(f(crate::Data::Str("the/end/")));
             assert!(!f(crate::Data::Str("end")));
             assert!(!f(crate::Data::Str("the/end")));
-            let f = super::cmp(crate::Data::Str("C:/this/is/a/test/path/with/a/dir/at/the/end"));
+            let f = super::cmp(crate::Data::Str(
+                "C:/this/is/a/test/path/with/a/dir/at/the/end",
+            ));
             assert!(f(crate::Data::Str("end")));
             assert!(!f(crate::Data::Str("end/")));
             assert!(!f(crate::Data::Str("the/end/")));

@@ -155,7 +155,17 @@ mod test {
         unsafe {
             let a: usize;
             core::arch::asm!("lea {},nopx64",out(reg) a,options(preserves_flags,nomem,nostack));
-            super::exec(a as u64, core::ptr::null_mut(), core::ptr::null_mut(), 0, 0, 0, 0, 0, 0)?;
+            super::exec(
+                a as u64,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )?;
         }
         Ok(())
     }

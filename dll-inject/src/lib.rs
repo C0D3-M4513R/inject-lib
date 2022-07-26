@@ -1,7 +1,7 @@
 #![cfg(target_family = "windows")]
 extern crate inject_lib;
 use inject_lib::error::Error;
-use inject_lib::{Inject,Injector,Data};
+use inject_lib::{Data, Inject, Injector};
 use std::ffi::{c_void, CStr, CString};
 use std::ops::Add;
 use std::os::raw::c_char;

@@ -1,9 +1,9 @@
 #![allow(non_snake_case)] //Windows structs do not follow rust convention. Ignore warnings about names.
 
+use core::fmt::Debug;
 use ntapi::ntapi_base::KPRIORITY;
 use ntapi::ntldr::LDR_DLL_LOAD_REASON;
 use ntapi::ntpsapi::GDI_HANDLE_BUFFER64;
-use core::fmt::Debug;
 use winapi::shared::basetsd::ULONG64;
 use winapi::shared::minwindef::PULONG;
 use winapi::shared::ntdef::{BOOLEAN, CHAR, NTSTATUS, UCHAR, ULONG, UNICODE_STRING64, USHORT};

@@ -5,20 +5,20 @@ use super::macros::{check_ptr, err};
 use super::process::Process;
 use super::{get_windir, predicate, str_from_wide_str};
 use crate::Result;
-use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
-use pelite::Wrap;
-use core::mem::MaybeUninit;
-use core::ops::Shl;
-use core::ptr::slice_from_raw_parts;
-use core::num::NonZeroUsize;
-use widestring::U16CString;
-use alloc::vec::Vec;
 use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::ffi::c_void;
+use core::mem::MaybeUninit;
+use core::num::NonZeroUsize;
+use core::ops::Shl;
+use core::ptr::slice_from_raw_parts;
 use core::sync::atomic::Ordering;
 use ntapi::ntpsapi::PROCESSINFOCLASS;
+use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
+use pelite::Wrap;
 pub use types::LDR_DATA_TABLE_ENTRY64;
+use widestring::U16CString;
 use winapi::shared::minwindef::{HMODULE, PULONG, ULONG};
 use winapi::shared::ntdef::{NTSTATUS, PVOID};
 use winapi::um::libloaderapi::{FreeLibrary, GetProcAddress, LoadLibraryW};
@@ -38,8 +38,12 @@ impl NTDLL {
     ///This class employs the Singleton principle.
     pub(crate) fn new() -> Result<&'static Self> {
         static INST: once_cell::race::OnceBox<NTDLL> = once_cell::race::OnceBox::new();
-        const NTDLL:&widestring::U16CStr = widestring::u16cstr!("NTDLL.dll");
-        debug_assert!(NTDLL.as_slice_with_nul().ends_with(&[0]),"{:x?}",NTDLL.as_slice_with_nul());
+        const NTDLL: &widestring::U16CStr = widestring::u16cstr!("NTDLL.dll");
+        debug_assert!(
+            NTDLL.as_slice_with_nul().ends_with(&[0]),
+            "{:x?}",
+            NTDLL.as_slice_with_nul()
+        );
         INST.get_or_try_init(|| {
             let handle = check_ptr!(LoadLibraryW(NTDLL.as_ptr())) as usize;
             Ok(Box::new(NTDLL { handle }))
@@ -208,7 +212,10 @@ impl NTDLL {
                 //t is valid & size_of(u8)=size_of(u16)/2
                 //
                 //we do not care about the last potentially byte, that we throw away here, because dll_path_buf was already a WTF string.
-                let dll_path = core::slice::from_raw_parts(dll_path_old.as_ptr() as *const u16, dll_path_old.len()/2);
+                let dll_path = core::slice::from_raw_parts(
+                    dll_path_old.as_ptr() as *const u16,
+                    dll_path_old.len() / 2,
+                );
                 // let dll_path_old = dll_path_buf.as_slice();
                 // let mut dll_path = Vec::with_capacity(((dll_win_string_length >> 1) + 1) as usize);
                 // let mut i = 0;
@@ -272,10 +279,13 @@ impl NTDLL {
             return Err(crate::error::CustomError::PermissionDenied.into());
         }
         static FNS: once_cell::race::OnceBox<FnNtdllWOW> = once_cell::race::OnceBox::new();
-        let fns:Result<&FnNtdllWOW,crate::error::Error> = FNS.get_or_try_init(|| {
-            Ok(Box::new(FnNtdllWOW::new(b"NtReadVirtualMemory\0", b"NtWow64ReadVirtualMemory64\0")?))
+        let fns: Result<&FnNtdllWOW, crate::error::Error> = FNS.get_or_try_init(|| {
+            Ok(Box::new(FnNtdllWOW::new(
+                b"NtReadVirtualMemory\0",
+                b"NtWow64ReadVirtualMemory64\0",
+            )?))
         });
-        let fns=fns?;
+        let fns = fns?;
         let mut buf: Vec<u8> = Vec::with_capacity(size as usize);
         crate::trace!("reading at address {:x?} {} bytes", addr, size);
         let mut i: u64 = 0;
@@ -378,19 +388,24 @@ impl NTDLL {
         }
         //Function prototype, of the NtQueryInformationProcess function in ntdll.
         //stdcall because on 32-bit we need to adhere to stdcall, but on x64 there is a set order.
-        type FnNtQueryInformationProcess =
-            extern "stdcall" fn(HANDLE, ntapi::ntpsapi::PROCESSINFOCLASS, PVOID, ULONG, PULONG) -> NTSTATUS;
+        type FnNtQueryInformationProcess = extern "stdcall" fn(
+            HANDLE,
+            ntapi::ntpsapi::PROCESSINFOCLASS,
+            PVOID,
+            ULONG,
+            PULONG,
+        ) -> NTSTATUS;
 
         //Get function
         let cfn = {
             static FNS: once_cell::race::OnceBox<FnNtdllWOW> = once_cell::race::OnceBox::new();
-            let fns:Result<&FnNtdllWOW,crate::error::Error> = FNS.get_or_try_init(|| {
+            let fns: Result<&FnNtdllWOW, crate::error::Error> = FNS.get_or_try_init(|| {
                 Ok(Box::new(FnNtdllWOW::new(
                     b"NtQueryInformationProcess\0",
                     b"NtWow64QueryInformationProcess64\0",
                 )?))
             });
-            let fns=fns?;
+            let fns = fns?;
             let cfn =
                 if super::process::Process::self_proc().is_under_wow()? && !proc.is_under_wow()? {
                     crate::trace!("Trying to get wow64 fn");
@@ -409,18 +424,19 @@ impl NTDLL {
         //Lets assume the worst case scenario, and allocate as much, as we might need.
         //Then we will later scale back to the size we actually need.
         let mut buf: Vec<u8> = Vec::with_capacity(size);
-        buf.resize(size,0);
+        buf.resize(size, 0);
         //Call function
         crate::trace!("Running NtQueryInformationProcess with fnptr:{:x?} proc:{:x?},pic:{:x}. Size is {}, buf is {:x?}",cfn as usize,proc.get_proc(),pic,size, buf);
 
-        unsafe extern "system" fn call(proc:HANDLE,pic:PROCESSINFOCLASS,buf:PVOID,size:u32,i:*mut u32,fnc:FnNtQueryInformationProcess)->NTSTATUS{
-            fnc(
-                proc,
-                pic,
-                buf,
-                size,
-                i,
-            )
+        unsafe extern "system" fn call(
+            proc: HANDLE,
+            pic: PROCESSINFOCLASS,
+            buf: PVOID,
+            size: u32,
+            i: *mut u32,
+            fnc: FnNtQueryInformationProcess,
+        ) -> NTSTATUS {
+            fnc(proc, pic, buf, size, i)
         }
 
         let status = crate::error::Ntdll::new(call(
@@ -516,16 +532,14 @@ impl<'a, 'b, 'c> FnNtdllWOW<'a, 'b, 'c> {
         {
             crate::trace!("wow64 fn");
 
-            let mut name=self.wowfn.load(Ordering::Acquire);
-            if name.is_null(){
-                let tmp =
-                    check_ptr!(GetProcAddress(
-                            self.ntdll.handle as HMODULE,
-                            self.wow64name.as_ptr() as *const i8
-                        ))
-                        as *mut c_void;
-                self.wowfn.store(tmp,Ordering::Release);
-                name=tmp;
+            let mut name = self.wowfn.load(Ordering::Acquire);
+            if name.is_null() {
+                let tmp = check_ptr!(GetProcAddress(
+                    self.ntdll.handle as HMODULE,
+                    self.wow64name.as_ptr() as *const i8
+                )) as *mut c_void;
+                self.wowfn.store(tmp, Ordering::Release);
+                name = tmp;
             }
             Ok(NtdllFn::WOW(name))
         }
@@ -534,16 +548,14 @@ impl<'a, 'b, 'c> FnNtdllWOW<'a, 'b, 'c> {
     pub(self) unsafe fn get_fn(&self) -> Result<NtdllFn<*mut core::ffi::c_void>> {
         crate::trace!("regular fn");
 
-        let mut name=self.namefn.load(Ordering::Acquire);
-        if name.is_null(){
-            let tmp =
-                check_ptr!(GetProcAddress(
-                            self.ntdll.handle as HMODULE,
-                            self.name.as_ptr() as *const i8
-                        ))
-                    as *mut c_void;
-            self.namefn.store(tmp,Ordering::Release);
-            name=tmp;
+        let mut name = self.namefn.load(Ordering::Acquire);
+        if name.is_null() {
+            let tmp = check_ptr!(GetProcAddress(
+                self.ntdll.handle as HMODULE,
+                self.name.as_ptr() as *const i8
+            )) as *mut c_void;
+            self.namefn.store(tmp, Ordering::Release);
+            name = tmp;
         }
         Ok(NtdllFn::Normal(name))
     }
@@ -563,8 +575,8 @@ impl Drop for NTDLL {
 //Fixme: regression(stdless): Wierdness is happening again. Help?!?
 pub mod test {
     extern crate std;
-    use std::prelude::rust_2021;
     use alloc::vec::Vec;
+    use std::prelude::rust_2021;
 
     use super::NTDLL;
     use crate::platforms::windows::ntdll::types;
@@ -592,7 +604,11 @@ pub mod test {
                         pelite::Wrap::T32(x) => x.DllBase as u64,
                         pelite::Wrap::T64(x) => x.DllBase as u64,
                     },
-                    |x| super::super::cmp(crate::Data::Str("ntdll.dll"))(crate::Data::Str(x.as_str())),
+                    |x| {
+                        super::super::cmp(crate::Data::Str("ntdll.dll"))(crate::Data::Str(
+                            x.as_str(),
+                        ))
+                    },
                 ),
             )
         };

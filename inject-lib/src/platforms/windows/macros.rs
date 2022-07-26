@@ -29,8 +29,7 @@ macro_rules! check_ptr {
 pub(crate) use check_ptr;
 
 ///Gets the windows Error, prints it, and returns an error.
-pub(crate) fn err(fn_name: &'static str) -> Error
-{
+pub(crate) fn err(fn_name: &'static str) -> Error {
     let err = unsafe { GetLastError() };
     crate::error!("{} failed! Errcode is:'{}'. Check, what the error code means here:'https://docs.microsoft.com/en-us/windows/win32/debug/system-error-codes'", fn_name, err);
     Error::Winapi(fn_name, err)

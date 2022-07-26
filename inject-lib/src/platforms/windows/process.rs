@@ -46,7 +46,7 @@ impl Process {
     pub fn self_proc() -> Self {
         Process {
             proc: unsafe { GetCurrentProcess() as usize },
-            pid: unsafe {GetCurrentProcessId()},
+            pid: unsafe { GetCurrentProcessId() },
             perms: PROCESS_ALL_ACCESS,
             wow: Default::default(),
         }

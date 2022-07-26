@@ -1,8 +1,8 @@
 use super::macros::err;
 use crate::error::CustomError;
 use crate::Result;
-use log::{info, trace};
 use core::ops::Deref;
+use log::{info, trace};
 use winapi::shared::minwindef::FALSE;
 use winapi::shared::ntdef::HANDLE;
 use winapi::um::synchapi::WaitForSingleObject;

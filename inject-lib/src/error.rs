@@ -70,7 +70,7 @@ impl Error {
     ///Gets the contents of Error::Winapi, if self holds data of that type
     fn get_winapi(&self) -> Option<(&&'static str, &u32)> {
         match self {
-            Error::Winapi(x,y) => Some((x, y)),
+            Error::Winapi(x, y) => Some((x, y)),
             _ => None,
         }
     }

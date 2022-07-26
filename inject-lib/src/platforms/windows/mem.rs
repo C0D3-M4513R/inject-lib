@@ -47,8 +47,8 @@ impl<'a> MemPage<'a> {
         };
         if addr.is_null() {
             return Err(err(
-                    "VirtualAllocEx failed to allocate the requested amount of bytes on a process",
-                ));
+                "VirtualAllocEx failed to allocate the requested amount of bytes on a process",
+            ));
         }
         Ok(MemPage {
             proc,
