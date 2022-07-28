@@ -13,12 +13,12 @@ env:
 jobs:
   ci:
     name: "build-ci-dll"
-    needs: ["build-release","build-dev"]
+    needs: ["build"]
     runs-on: ubuntu-latest
     steps:
       - name: Done
         run: exit 0
-  build-release:
+  build:
     runs-on: windows-latest
     strategy:
       matrix:
@@ -38,14 +38,13 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --target ${{ matrix.target }} --profile ${{ matrix.profile }} --feature ${{ matrix.feature }} --package dll-inject
+          args: --target ${{ matrix.target }} --profile ${{ matrix.profile }} --features ${{ matrix.feature }} --package dll-inject
       - name: generate bindings
         working-directory: ./dll-inject
         run: cbindgen --config cbindgen.toml --crate dll-inject --output dll-inject.h
 
       - name: list dependencies
         uses: actions-rs/cargo@v1
-        working-directory: ./dll-inject/
         with:
           command: rustc
           args: -p dll-inject --features ${{ matrix.feature }} -- --print native-static-libs
