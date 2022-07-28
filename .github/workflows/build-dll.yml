@@ -13,12 +13,12 @@ env:
 jobs:
   ci:
     name: "build-ci-dll"
-    needs: ["build-release","build-dev"]
+    needs: ["build"]
     runs-on: ubuntu-latest
     steps:
       - name: Done
         run: exit 0
-  build-release:
+  build:
     runs-on: windows-latest
     strategy:
       matrix:
