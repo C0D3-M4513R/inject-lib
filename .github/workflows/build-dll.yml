@@ -45,7 +45,6 @@ jobs:
 
       - name: list dependencies
         uses: actions-rs/cargo@v1
-        working-directory: ./dll-inject/
         with:
           command: rustc
           args: -p dll-inject --features ${{ matrix.feature }} -- --print native-static-libs
