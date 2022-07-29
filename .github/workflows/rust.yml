@@ -38,11 +38,11 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: build
-          args: ${{ matrix.args }} --features ${{ matrix.features }} --target ${{ matrix.target }} --package inject-lib
+          args: ${{ matrix.args }} --no-default-features --features ${{ matrix.features }} --target ${{ matrix.target }} --package inject-lib
       - uses: actions-rs/cargo@v1
         with:
           command: test
-          args: ${{ matrix.args }} --features ${{ matrix.features }} --target ${{ matrix.target }} --package inject-lib
+          args: ${{ matrix.args }} --no-default-features --features ${{ matrix.features }} --target ${{ matrix.target }} --package inject-lib
 
   build-ubuntu:
     name: "build-ubuntu"
@@ -59,8 +59,8 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: build
-          args: ${{ matrix.args }} --features ntdll --package inject-lib
+          args: ${{ matrix.args }} --no-default-features --features ntdll --package inject-lib
       - uses: actions-rs/cargo@v1
         with:
           command: test
-          args: ${{ matrix.args }} --features ntdll --package inject-lib
+          args: ${{ matrix.args }} --no-default-features --features ntdll --package inject-lib
