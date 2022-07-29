@@ -23,7 +23,7 @@ jobs:
     strategy:
       matrix:
         profile: ["dev","release"]
-        feature: ["none","std"]
+        feature: ["alloc","alloc std"]
         target: [i686-pc-windows-msvc, i686-pc-windows-gnu ,x86_64-pc-windows-msvc, x86_64-pc-windows-gnu]
     steps:
       - uses: actions/checkout@v3
@@ -38,7 +38,7 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --target ${{ matrix.target }} --profile ${{ matrix.profile }} --features ${{ matrix.feature }} --package dll-inject
+          args: --target ${{ matrix.target }} --profile ${{ matrix.profile }} --no-default-features --features '${{ matrix.feature }}' --package dll-inject
       - name: generate bindings
         working-directory: ./dll-inject
         run: cbindgen --config cbindgen.toml --crate dll-inject --output dll-inject.h
@@ -47,7 +47,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: rustc
-          args: -p dll-inject --features ${{ matrix.feature }} -- --print native-static-libs
+          args: -p dll-inject --features '${{ matrix.feature }}' -- --print native-static-libs
 
       - uses: actions/upload-artifact@v3
         name: upload release artifact
