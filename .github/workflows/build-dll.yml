@@ -38,7 +38,7 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --target ${{ matrix.target }} --profile ${{ matrix.profile }} --features ${{ matrix.feature }} --package dll-inject
+          args: --target ${{ matrix.target }} --profile ${{ matrix.profile }} --no-default-features --features ${{ matrix.feature }} --package dll-inject
       - name: generate bindings
         working-directory: ./dll-inject
         run: cbindgen --config cbindgen.toml --crate dll-inject --output dll-inject.h
