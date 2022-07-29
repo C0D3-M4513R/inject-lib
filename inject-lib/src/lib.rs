@@ -246,6 +246,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(target_os = "windows")]
     fn cmp() {
         simple_logger::SimpleLogger::new().init().ok();
         //Simple case
