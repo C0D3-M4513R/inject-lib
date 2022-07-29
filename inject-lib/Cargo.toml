@@ -10,7 +10,7 @@ authors = ["C0D3 M4513R <28912031+C0D3-M4513R@users.noreply.github.com>"]
 edition = "2021"
 license = "LGPL-2.1-only OR MIT"
 categories = []
-keywords = ["dll-injection", "dll", "injector", "windows"]
+keywords = ["dll-injection", "dll", "injector", "windows","nostd"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -53,7 +53,7 @@ thread_local = "1.1.4"
 required-features=["alloc"]
 
 [features]
-default=["alloc"]
+default=["alloc","std"]
 nightly=[]
 ntdll=["ntapi"]
 x86tox64=["ntdll"]
