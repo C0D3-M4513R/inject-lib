@@ -55,7 +55,7 @@ pub enum CustomError {
     ///The requested operation would have resulted in a Permission error.
     PermissionDenied,
     ///This occures when it was expexted, that a Library is Loaded, but not found.
-    LibraryNotFound(alloc::string::String)
+    LibraryNotFound(alloc::string::String),
 }
 
 impl From<CustomError> for Error {

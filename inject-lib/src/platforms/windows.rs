@@ -319,7 +319,7 @@ impl<'a> Inject for InjectWin<'a> {
     ///This function will attempt, to eject a dll from another process.
     ///Notice: This implementation blocks, and waits, until the library is ejected?, or the ejection failed.
     fn eject(&self) -> Result<()> {
-        const x86ejectx64:crate::error::Error = crate::error::Error::Unsupported(Some(
+        const x86ejectx64: crate::error::Error = crate::error::Error::Unsupported(Some(
             "ejecting is not currently supported from a x86 binary targeting a x64 process.",
         ));
 
@@ -341,10 +341,16 @@ impl<'a> Inject for InjectWin<'a> {
             None => return Err(crate::error::CustomError::DllPathNoFile.into()),
         };
         // let (_path, base) = get_module(name.as_str(), &proc)?;
-        let handle = match get_module(crate::Data::Str(name.as_str()),&proc){
-            Ok((str,(base,Some(h))))=>h,
-            Ok(_)=>{return Err(x86ejectx64);},
-            Err(_)=>{return Err(crate::error::Error::InjectLib(crate::error::CustomError::LibraryNotFound(self.inj.dll.to_string())));},
+        let handle = match get_module(crate::Data::Str(name.as_str()), &proc) {
+            Ok((str, (base, Some(h)))) => h,
+            Ok(_) => {
+                return Err(x86ejectx64);
+            }
+            Err(_) => {
+                return Err(crate::error::Error::InjectLib(
+                    crate::error::CustomError::LibraryNotFound(self.inj.dll.to_string()),
+                ));
+            }
         };
         crate::info!("Found dll in proc, with handle:{:#x?}", handle);
         //If the target process is x86, this is slightly too much,
@@ -464,7 +470,7 @@ impl<'a> InjectWin<'a> {
         }
 
         let entry_point = {
-            let (path, (base,_)) = get_module(crate::Data::Str("KERNEL32.DLL"), &proc)?;
+            let (path, (base, _)) = get_module(crate::Data::Str("KERNEL32.DLL"), &proc)?;
             base + get_dll_export(entry_fn, path)? as u64
         };
         crate::info!(
@@ -776,7 +782,7 @@ fn get_module(name: crate::Data, proc: &Process) -> Result<(String, (u64, Option
                     |w: pelite::Wrap<LDR_DATA_TABLE_ENTRY32, ntdll::LDR_DATA_TABLE_ENTRY64>| match w
                     {
                         pelite::Wrap::T32(w) => (w.DllBase as u64, None),
-                        pelite::Wrap::T64(w) => (w.DllBase as u64, None)
+                        pelite::Wrap::T64(w) => (w.DllBase as u64, None),
                     },
                     |x| (&cmp)(crate::Data::Str(x.as_str())),
                 ),

@@ -32,7 +32,6 @@ extern crate alloc;
 compile_error!("inject_lib doesn't yet support no alloc environments");
 extern crate core;
 
-
 use alloc::vec::Vec;
 use core::fmt::{Display, Formatter};
 
@@ -73,12 +72,12 @@ pub enum Data<'a> {
     #[cfg(feature = "std")]
     Path(&'a std::path::Path),
 }
-impl<'a> Display for Data<'a>{
+impl<'a> Display for Data<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        match self{
-            Data::Str(s)=>write!(f,"{}",s),
+        match self {
+            Data::Str(s) => write!(f, "{}", s),
             #[cfg(feature = "std")]
-            Data::Path(p)=>write!(f,"{}",p.to_string_lossy()),
+            Data::Path(p) => write!(f, "{}", p.to_string_lossy()),
         }
     }
 }
