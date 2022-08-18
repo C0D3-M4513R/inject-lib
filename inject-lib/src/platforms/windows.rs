@@ -8,8 +8,9 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use core::mem::size_of;
+use log::error;
 use pelite::Pod;
-use winapi::shared::minwindef::{DWORD, FALSE, MAX_PATH};
+use winapi::shared::minwindef::{DWORD, FALSE, HMODULE, MAX_PATH};
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
 use winapi::um::processthreadsapi::CreateRemoteThread;
 use winapi::um::sysinfoapi::GetSystemWindowsDirectoryW;
@@ -316,8 +317,12 @@ impl<'a> Inject for InjectWin<'a> {
         self.exec_fn_in_proc(&proc, "LoadLibraryW", mem)
     }
     ///This function will attempt, to eject a dll from another process.
-    ///Notice:This implementation blocks, and waits, until the library is ejected?, or the ejection failed.
+    ///Notice: This implementation blocks, and waits, until the library is ejected?, or the ejection failed.
     fn eject(&self) -> Result<()> {
+        const x86ejectx64:crate::error::Error = crate::error::Error::Unsupported(Some(
+            "ejecting is not currently supported from a x86 binary targeting a x64 process.",
+        ));
+
         let proc = Process::new(
             self.inj.pid,
             PROCESS_CREATE_THREAD
@@ -327,9 +332,7 @@ impl<'a> Inject for InjectWin<'a> {
                 | PROCESS_QUERY_INFORMATION,
         )?;
         if Process::self_proc().is_under_wow()? && !proc.is_under_wow()? {
-            return Err(crate::error::Error::Unsupported(Some(
-                "ejecting is not currently supported from a x86 binary targeting a x64 process.",
-            )));
+            return Err(x86ejectx64);
         }
 
         let name = canonicalize(&self.inj.dll)?.1;
@@ -337,23 +340,12 @@ impl<'a> Inject for InjectWin<'a> {
             Some(name) => name,
             None => return Err(crate::error::CustomError::DllPathNoFile.into()),
         };
-        let name = name.as_str();
         // let (_path, base) = get_module(name.as_str(), &proc)?;
-        let handle = get_module_in_pid(
-            self.inj.pid,
-            |m| {
-                if let Ok(v) = str_from_wide_str(&m.szModule) {
-                    if cmp(crate::Data::Str(name))(crate::Data::Str(v.as_str())) {
-                        Some(m.hModule)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            },
-            None,
-        )?;
+        let handle = match get_module(crate::Data::Str(name.as_str()),&proc){
+            Ok((str,(base,Some(h))))=>h,
+            Ok(_)=>{return Err(x86ejectx64);},
+            Err(_)=>{return Err(crate::error::Error::InjectLib(crate::error::CustomError::LibraryNotFound(self.inj.dll.to_string())));},
+        };
         crate::info!("Found dll in proc, with handle:{:#x?}", handle);
         //If the target process is x86, this is slightly too much,
         //but the windows kernel seems to allocate at least 4k, so this does not matter.
@@ -472,7 +464,7 @@ impl<'a> InjectWin<'a> {
         }
 
         let entry_point = {
-            let (path, base) = get_module(crate::Data::Str("KERNEL32.DLL"), &proc)?;
+            let (path, (base,_)) = get_module(crate::Data::Str("KERNEL32.DLL"), &proc)?;
             base + get_dll_export(entry_fn, path)? as u64
         };
         crate::info!(
@@ -657,6 +649,7 @@ impl<'a> InjectWin<'a> {
 ///- pid: process pid
 ///- predicate: a Function, which returns Some(value), when the desired module is found.
 ///- snapshot_flags: an option, to pass other flags, to `CreateToolhelp32Snapshot`
+//Do not use, use get_module instead.
 fn get_module_in_pid<F, T>(pid: u32, predicate: F, snapshot_flags: Option<u32>) -> Result<T>
 where
     F: Fn(&MODULEENTRY32W) -> Option<T>,
@@ -719,9 +712,9 @@ fn get_windir<'a>() -> Result<&'a String> {
 ///name specifies, what module to look for.
 ///f processes the other input from other functions
 //todo: does this bring a performance benefit?
-fn predicate<T, F, C>(f: T, cmp: C) -> impl Fn(F, &[u16]) -> Option<(String, u64)>
+fn predicate<T, F, O, C>(f: T, cmp: C) -> impl Fn(F, &[u16]) -> Option<(String, O)>
 where
-    T: Fn(F) -> u64,
+    T: Fn(F) -> O,
     C: Fn(&String) -> bool,
 {
     move |i2, v| match str_from_wide_str(crate::trim_wide_str::<true>(v)) {
@@ -739,7 +732,10 @@ where
 ///Gets the base address of where a dll is loaded within a process.
 ///The dll is identified by name. name is checked against the whole file name.
 ///if the process has a pseudo-handle, the ntdll methods will not run.
-fn get_module(name: crate::Data, proc: &Process) -> Result<(String, u64)> {
+///
+///The return value is (dll name, (dll base address, dll handle))
+//This return type is getting out of hand. Mayebe consider a struct for this?
+fn get_module(name: crate::Data, proc: &Process) -> Result<(String, (u64, Option<HMODULE>))> {
     let cmp = cmp(name);
     let ntdll = !process::Process::self_proc().is_under_wow()? || proc.is_under_wow()?;
     #[cfg(test)]
@@ -749,7 +745,7 @@ fn get_module(name: crate::Data, proc: &Process) -> Result<(String, u64)> {
             proc.get_pid(),
             |m| {
                 predicate(
-                    |m: &MODULEENTRY32W| m.modBaseAddr as u64,
+                    |m: &MODULEENTRY32W| (m.modBaseAddr as u64, Some(m.hModule)),
                     |x| (&cmp)(crate::Data::Str(x.as_str())),
                 )(m, &m.szExePath)
             },
@@ -779,8 +775,8 @@ fn get_module(name: crate::Data, proc: &Process) -> Result<(String, u64)> {
                 predicate(
                     |w: pelite::Wrap<LDR_DATA_TABLE_ENTRY32, ntdll::LDR_DATA_TABLE_ENTRY64>| match w
                     {
-                        pelite::Wrap::T32(w) => w.DllBase as u64,
-                        pelite::Wrap::T64(w) => w.DllBase as u64,
+                        pelite::Wrap::T32(w) => (w.DllBase as u64, None),
+                        pelite::Wrap::T64(w) => (w.DllBase as u64, None)
                     },
                     |x| (&cmp)(crate::Data::Str(x.as_str())),
                 ),
