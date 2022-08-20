@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use core::mem::size_of;
 use log::error;
 use pelite::Pod;
-use winapi::shared::minwindef::{DWORD, FALSE, HMODULE, MAX_PATH};
+use winapi::shared::minwindef::{DWORD, FALSE, HMODULE, LPVOID, MAX_PATH};
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
 use winapi::um::processthreadsapi::CreateRemoteThread;
 use winapi::um::sysinfoapi::GetSystemWindowsDirectoryW;
@@ -314,7 +314,8 @@ impl<'a> Inject for InjectWin<'a> {
             mempage.write(full_path.as_bytes())?;
             mempage
         };
-        self.exec_fn_in_proc(&proc, "LoadLibraryW", mem)
+        self.exec_fn_in_proc(&proc, "LoadLibraryW", mem.get_address())
+
     }
     ///This function will attempt, to eject a dll from another process.
     ///Notice: This implementation blocks, and waits, until the library is ejected?, or the ejection failed.
@@ -353,23 +354,7 @@ impl<'a> Inject for InjectWin<'a> {
             }
         };
         crate::info!("Found dll in proc, with handle:{:#x?}", handle);
-        //If the target process is x86, this is slightly too much,
-        //but the windows kernel seems to allocate at least 4k, so this does not matter.
-        const SIZE: usize = core::mem::size_of::<u64>();
-        //scope here, so Vec will get deleted after this
-        let mem = {
-            let mut mempage = MemPage::new(&proc, SIZE, false)?;
-            let mut buf = Vec::with_capacity(SIZE);
-            if proc.is_under_wow()? {
-                buf.append(&mut (handle as usize).as_bytes().to_vec());
-            } else {
-                buf.append(&mut handle.as_bytes().to_vec());
-            }
-            buf.shrink_to_fit();
-            mempage.write(buf.as_slice())?;
-            mempage
-        };
-        self.exec_fn_in_proc(&proc, "FreeLibrary", mem)
+        self.exec_fn_in_proc(&proc, "FreeLibrary", handle as LPVOID)
     }
 
     ///This Function will find all currently processes, with a given name.
@@ -400,7 +385,7 @@ impl<'a> Inject for InjectWin<'a> {
 impl<'a> InjectWin<'a> {
     ///This function executes the entry_fn from Kernel32.dll with the argument of mem in the process proc.
     ///the process mem was created with, and proc must hold the same handle.
-    fn exec_fn_in_proc(&self, proc: &Process, entry_fn: &str, mem: MemPage) -> Result<()> {
+    fn exec_fn_in_proc(&self, proc: &Process, entry_fn: &str, param: LPVOID) -> Result<()> {
         //What follows is a bunch of things, for injecting dlls cross-platform
         //https://rce.co/knockin-on-heavens-gate-dynamic-processor-mode-switching/
         //https://medium.com/@fsx30/hooking-heavens-gate-a-wow64-hooking-technique-5235e1aeed73
@@ -420,9 +405,6 @@ impl<'a> InjectWin<'a> {
             return Err(Error::Unsupported(Some(
                 "PID 0 is an invalid target under windows.",
             )));
-        }
-        if !mem.check_proc(proc) {
-            return Err(crate::error::CustomError::MempageInvalidProcess.into());
         }
 
         let self_proc = Process::self_proc();
@@ -476,7 +458,7 @@ impl<'a> InjectWin<'a> {
         crate::info!(
             "Allocated {} Parameter at {:#x?}. fn ptr is {:#x} vs {:#x}",
             entry_fn,
-            mem.get_address(),
+            param,
             entry_point,
             entry_point as usize
         );
@@ -505,7 +487,7 @@ impl<'a> InjectWin<'a> {
                             0,
                             0,
                             entry_point as u64,
-                            mem.get_address() as u64,
+                            param as u64,
                         )?
                     }
                 };
@@ -525,7 +507,7 @@ impl<'a> InjectWin<'a> {
                             0,
                             0,
                             core::mem::transmute(entry_point as usize),
-                            mem.get_address(),
+                            param,
                             &mut t as winapi::shared::ntdef::PHANDLE,
                             core::mem::transmute(&mut c as ntapi::ntapi_base::PCLIENT_ID64),
                         )
@@ -556,7 +538,7 @@ impl<'a> InjectWin<'a> {
                     core::ptr::null_mut(),
                     0,
                     Some(core::mem::transmute(entry_point as usize)),
-                    mem.get_address(),
+                    param,
                     0,
                     &mut thread_id as *mut u32,
                 ))
