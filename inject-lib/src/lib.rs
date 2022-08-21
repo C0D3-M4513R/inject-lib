@@ -60,7 +60,7 @@ pub trait Inject {
     fn eject(&self) -> Result<()>;
     ///This Function will find all currently processes, with a given name.
     ///Even if no processes are found, an empty Vector should return.
-    fn find_pid(name: Data) -> Result<Vec<u32>>;
+    fn find_pid(name: Data) -> Result<alloc::vec::Vec<u32>>;
 }
 ///Data can be a Path(if we have std), or a String.
 ///Data will get handled differently in no_std and std scenarios
@@ -120,7 +120,7 @@ impl<'a> Injector<'a> {
     #[cfg(target_family = "windows")]
     ///This Function will find all currently processes, with a given name.
     ///Even if no processes are found, an empty Vector should return.
-    pub fn find_pid(name: Data) -> Result<Vec<u32>> {
+    pub fn find_pid(name: Data) -> Result<alloc::vec::Vec<u32>> {
         platforms::windows::InjectWin::find_pid(name)
     }
 }
