@@ -170,7 +170,7 @@ fn canonicalize(p: &crate::Data) -> Result<(String, Option<String>)> {
                 ));
             }
             log::info!("Size of fp is {},{}", size, err);
-            assert!(buf.capacity()>=size as usize);
+            assert!(buf.capacity() >= size as usize);
             //Safety: Trust windows
             unsafe { buf.set_len(size as usize) };
 
@@ -320,7 +320,6 @@ impl<'a> Inject for InjectWin<'a> {
             mempage
         };
         self.exec_fn_in_proc(&proc, "LoadLibraryW", mem.get_address())
-
     }
     ///This function will attempt, to eject a dll from another process.
     ///Notice: This implementation blocks, and waits, until the library is ejected?, or the ejection failed.
@@ -685,7 +684,8 @@ where
 }
 ///This gets the directory, where windows files reside. Usually C:\Windows
 fn get_windir<'a>() -> Result<&'a alloc::string::String> {
-    static WINDIR: once_cell::race::OnceBox<alloc::string::String> = once_cell::race::OnceBox::new();
+    static WINDIR: once_cell::race::OnceBox<alloc::string::String> =
+        once_cell::race::OnceBox::new();
     let str = WINDIR.get_or_try_init(||{
 		let i=check_ptr!(GetSystemWindowsDirectoryW(core::ptr::null_mut(),0),|v|v==0);
 		let mut str_buf:alloc::vec::Vec<u16> = Vec::with_capacity( i as usize);
@@ -786,8 +786,8 @@ fn get_dll_export(name: &str, path: alloc::string::String) -> Result<u32> {
     let path = if process::Process::self_proc().is_under_wow()? {
         let str = get_windir()?.clone();
         path.replace(
-            (str.clone()+"\\System32").as_str(),
-            (str+"\\Sysnative").as_str()
+            (str.clone() + "\\System32").as_str(),
+            (str + "\\Sysnative").as_str(),
         )
     } else {
         path
@@ -894,12 +894,13 @@ pub mod test {
         let windir = super::get_windir()?;
         let mut path = windir.clone();
 
-        const cmd_path:&'static str =
-        if cfg!(target_pointer_width = "32")
+        const cmd_path: &'static str = if cfg!(target_pointer_width = "32")
         //On 32-bit wow redirects the path
-        {r"\SysWOW64\cmd.exe"}
-        else
-        {r"\System32\cmd.exe"};
+        {
+            r"\SysWOW64\cmd.exe"
+        } else {
+            r"\System32\cmd.exe"
+        };
 
         path.push_str(cmd_path);
 
