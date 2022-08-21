@@ -33,6 +33,7 @@ compile_error!("inject_lib doesn't yet support no alloc environments");
 extern crate core;
 
 use alloc::vec::Vec;
+use core::fmt::{Display, Formatter};
 
 ///This struct will expose certain module private functions, to actually use the api.
 ///The exact contents should be considered implementation detail.
@@ -59,7 +60,7 @@ pub trait Inject {
     fn eject(&self) -> Result<()>;
     ///This Function will find all currently processes, with a given name.
     ///Even if no processes are found, an empty Vector should return.
-    fn find_pid(name: Data) -> Result<Vec<u32>>;
+    fn find_pid(name: Data) -> Result<alloc::vec::Vec<u32>>;
 }
 ///Data can be a Path(if we have std), or a String.
 ///Data will get handled differently in no_std and std scenarios
@@ -70,6 +71,15 @@ pub enum Data<'a> {
     ///This is a Path encoded as a Path std object
     #[cfg(feature = "std")]
     Path(&'a std::path::Path),
+}
+impl<'a> Display for Data<'a> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Data::Str(s) => write!(f, "{}", s),
+            #[cfg(feature = "std")]
+            Data::Path(p) => write!(f, "{}", p.to_string_lossy()),
+        }
+    }
 }
 impl<'a> Data<'a> {
     fn get_str(&self) -> Option<&'a str> {
@@ -110,7 +120,7 @@ impl<'a> Injector<'a> {
     #[cfg(target_family = "windows")]
     ///This Function will find all currently processes, with a given name.
     ///Even if no processes are found, an empty Vector should return.
-    pub fn find_pid(name: Data) -> Result<Vec<u32>> {
+    pub fn find_pid(name: Data) -> Result<alloc::vec::Vec<u32>> {
         platforms::windows::InjectWin::find_pid(name)
     }
 }

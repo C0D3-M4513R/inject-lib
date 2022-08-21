@@ -8,8 +8,9 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use core::mem::size_of;
+use log::error;
 use pelite::Pod;
-use winapi::shared::minwindef::{DWORD, FALSE, MAX_PATH};
+use winapi::shared::minwindef::{DWORD, FALSE, HMODULE, LPVOID, MAX_PATH};
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
 use winapi::um::processthreadsapi::CreateRemoteThread;
 use winapi::um::sysinfoapi::GetSystemWindowsDirectoryW;
@@ -99,7 +100,11 @@ fn canonicalize(p: &crate::Data) -> Result<(String, Option<String>)> {
             };
             log::trace!("Size of fp is {}", size);
             //Get Full Path
-            buf.reserve_exact(size as usize);
+            //todo: why is +1 needed here?
+            //      Without dropping this will result in a error (Heap Corruprion or Access violations).
+            //      Also the return value for GetFinalPathNameByHandleW should include the size of the null-byte if not enough capacity exists.
+            buf.reserve_exact(size as usize + 1);
+
             unsafe {
                 core::ptr::write_bytes(buf.as_mut_ptr(), 0, size as usize + 1);
             }
@@ -165,6 +170,7 @@ fn canonicalize(p: &crate::Data) -> Result<(String, Option<String>)> {
                 ));
             }
             log::info!("Size of fp is {},{}", size, err);
+            assert!(buf.capacity() >= size as usize);
             //Safety: Trust windows
             unsafe { buf.set_len(size as usize) };
 
@@ -313,11 +319,15 @@ impl<'a> Inject for InjectWin<'a> {
             mempage.write(full_path.as_bytes())?;
             mempage
         };
-        self.exec_fn_in_proc(&proc, "LoadLibraryW", mem)
+        self.exec_fn_in_proc(&proc, "LoadLibraryW", mem.get_address())
     }
     ///This function will attempt, to eject a dll from another process.
-    ///Notice:This implementation blocks, and waits, until the library is ejected?, or the ejection failed.
+    ///Notice: This implementation blocks, and waits, until the library is ejected?, or the ejection failed.
     fn eject(&self) -> Result<()> {
+        const x86ejectx64: crate::error::Error = crate::error::Error::Unsupported(Some(
+            "ejecting is not currently supported from a x86 binary targeting a x64 process.",
+        ));
+
         let proc = Process::new(
             self.inj.pid,
             PROCESS_CREATE_THREAD
@@ -327,9 +337,7 @@ impl<'a> Inject for InjectWin<'a> {
                 | PROCESS_QUERY_INFORMATION,
         )?;
         if Process::self_proc().is_under_wow()? && !proc.is_under_wow()? {
-            return Err(crate::error::Error::Unsupported(Some(
-                "ejecting is not currently supported from a x86 binary targeting a x64 process.",
-            )));
+            return Err(x86ejectx64);
         }
 
         let name = canonicalize(&self.inj.dll)?.1;
@@ -337,41 +345,20 @@ impl<'a> Inject for InjectWin<'a> {
             Some(name) => name,
             None => return Err(crate::error::CustomError::DllPathNoFile.into()),
         };
-        let name = name.as_str();
         // let (_path, base) = get_module(name.as_str(), &proc)?;
-        let handle = get_module_in_pid(
-            self.inj.pid,
-            |m| {
-                if let Ok(v) = str_from_wide_str(&m.szModule) {
-                    if cmp(crate::Data::Str(name))(crate::Data::Str(v.as_str())) {
-                        Some(m.hModule)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            },
-            None,
-        )?;
-        crate::info!("Found dll in proc, with handle:{:#x?}", handle);
-        //If the target process is x86, this is slightly too much,
-        //but the windows kernel seems to allocate at least 4k, so this does not matter.
-        const SIZE: usize = core::mem::size_of::<u64>();
-        //scope here, so Vec will get deleted after this
-        let mem = {
-            let mut mempage = MemPage::new(&proc, SIZE, false)?;
-            let mut buf = Vec::with_capacity(SIZE);
-            if proc.is_under_wow()? {
-                buf.append(&mut (handle as usize).as_bytes().to_vec());
-            } else {
-                buf.append(&mut handle.as_bytes().to_vec());
+        let handle = match get_module(crate::Data::Str(name.as_str()), &proc) {
+            Ok((str, (base, Some(h)))) => h,
+            Ok(_) => {
+                return Err(x86ejectx64);
             }
-            buf.shrink_to_fit();
-            mempage.write(buf.as_slice())?;
-            mempage
+            Err(_) => {
+                return Err(crate::error::Error::InjectLib(
+                    crate::error::CustomError::LibraryNotFound(self.inj.dll.to_string()),
+                ));
+            }
         };
-        self.exec_fn_in_proc(&proc, "FreeLibrary", mem)
+        crate::info!("Found dll in proc, with handle:{:#x?}", handle);
+        self.exec_fn_in_proc(&proc, "FreeLibrary", handle as LPVOID)
     }
 
     ///This Function will find all currently processes, with a given name.
@@ -402,7 +389,7 @@ impl<'a> Inject for InjectWin<'a> {
 impl<'a> InjectWin<'a> {
     ///This function executes the entry_fn from Kernel32.dll with the argument of mem in the process proc.
     ///the process mem was created with, and proc must hold the same handle.
-    fn exec_fn_in_proc(&self, proc: &Process, entry_fn: &str, mem: MemPage) -> Result<()> {
+    fn exec_fn_in_proc(&self, proc: &Process, entry_fn: &str, param: LPVOID) -> Result<()> {
         //What follows is a bunch of things, for injecting dlls cross-platform
         //https://rce.co/knockin-on-heavens-gate-dynamic-processor-mode-switching/
         //https://medium.com/@fsx30/hooking-heavens-gate-a-wow64-hooking-technique-5235e1aeed73
@@ -422,9 +409,6 @@ impl<'a> InjectWin<'a> {
             return Err(Error::Unsupported(Some(
                 "PID 0 is an invalid target under windows.",
             )));
-        }
-        if !mem.check_proc(proc) {
-            return Err(crate::error::CustomError::MempageInvalidProcess.into());
         }
 
         let self_proc = Process::self_proc();
@@ -472,13 +456,13 @@ impl<'a> InjectWin<'a> {
         }
 
         let entry_point = {
-            let (path, base) = get_module(crate::Data::Str("KERNEL32.DLL"), &proc)?;
+            let (path, (base, _)) = get_module(crate::Data::Str("KERNEL32.DLL"), &proc)?;
             base + get_dll_export(entry_fn, path)? as u64
         };
         crate::info!(
             "Allocated {} Parameter at {:#x?}. fn ptr is {:#x} vs {:#x}",
             entry_fn,
-            mem.get_address(),
+            param,
             entry_point,
             entry_point as usize
         );
@@ -507,7 +491,7 @@ impl<'a> InjectWin<'a> {
                             0,
                             0,
                             entry_point as u64,
-                            mem.get_address() as u64,
+                            param as u64,
                         )?
                     }
                 };
@@ -527,7 +511,7 @@ impl<'a> InjectWin<'a> {
                             0,
                             0,
                             core::mem::transmute(entry_point as usize),
-                            mem.get_address(),
+                            param,
                             &mut t as winapi::shared::ntdef::PHANDLE,
                             core::mem::transmute(&mut c as ntapi::ntapi_base::PCLIENT_ID64),
                         )
@@ -558,7 +542,7 @@ impl<'a> InjectWin<'a> {
                     core::ptr::null_mut(),
                     0,
                     Some(core::mem::transmute(entry_point as usize)),
-                    mem.get_address(),
+                    param,
                     0,
                     &mut thread_id as *mut u32,
                 ))
@@ -657,6 +641,7 @@ impl<'a> InjectWin<'a> {
 ///- pid: process pid
 ///- predicate: a Function, which returns Some(value), when the desired module is found.
 ///- snapshot_flags: an option, to pass other flags, to `CreateToolhelp32Snapshot`
+//Do not use, use get_module instead.
 fn get_module_in_pid<F, T>(pid: u32, predicate: F, snapshot_flags: Option<u32>) -> Result<T>
 where
     F: Fn(&MODULEENTRY32W) -> Option<T>,
@@ -698,11 +683,12 @@ where
     }
 }
 ///This gets the directory, where windows files reside. Usually C:\Windows
-fn get_windir<'a>() -> Result<&'a String> {
-    static WINDIR: once_cell::race::OnceBox<String> = once_cell::race::OnceBox::new();
+fn get_windir<'a>() -> Result<&'a alloc::string::String> {
+    static WINDIR: once_cell::race::OnceBox<alloc::string::String> =
+        once_cell::race::OnceBox::new();
     let str = WINDIR.get_or_try_init(||{
 		let i=check_ptr!(GetSystemWindowsDirectoryW(core::ptr::null_mut(),0),|v|v==0);
-		let mut str_buf:Vec<u16> = Vec::with_capacity( i as usize);
+		let mut str_buf:alloc::vec::Vec<u16> = Vec::with_capacity( i as usize);
 		let i2=check_ptr!(GetSystemWindowsDirectoryW(str_buf.as_mut_ptr(),i),|v|v==0);
         assert!(i2<=i,"GetSystemWindowsDirectoryA says, that {} bytes are needed, but then changed it's mind. Now {} bytes are needed.",i,i2);
 		unsafe{str_buf.set_len(i2 as usize)};
@@ -719,9 +705,9 @@ fn get_windir<'a>() -> Result<&'a String> {
 ///name specifies, what module to look for.
 ///f processes the other input from other functions
 //todo: does this bring a performance benefit?
-fn predicate<T, F, C>(f: T, cmp: C) -> impl Fn(F, &[u16]) -> Option<(String, u64)>
+fn predicate<T, F, O, C>(f: T, cmp: C) -> impl Fn(F, &[u16]) -> Option<(String, O)>
 where
-    T: Fn(F) -> u64,
+    T: Fn(F) -> O,
     C: Fn(&String) -> bool,
 {
     move |i2, v| match str_from_wide_str(crate::trim_wide_str::<true>(v)) {
@@ -739,7 +725,10 @@ where
 ///Gets the base address of where a dll is loaded within a process.
 ///The dll is identified by name. name is checked against the whole file name.
 ///if the process has a pseudo-handle, the ntdll methods will not run.
-fn get_module(name: crate::Data, proc: &Process) -> Result<(String, u64)> {
+///
+///The return value is (dll name, (dll base address, dll handle))
+//This return type is getting out of hand. Mayebe consider a struct for this?
+fn get_module(name: crate::Data, proc: &Process) -> Result<(String, (u64, Option<HMODULE>))> {
     let cmp = cmp(name);
     let ntdll = !process::Process::self_proc().is_under_wow()? || proc.is_under_wow()?;
     #[cfg(test)]
@@ -749,7 +738,7 @@ fn get_module(name: crate::Data, proc: &Process) -> Result<(String, u64)> {
             proc.get_pid(),
             |m| {
                 predicate(
-                    |m: &MODULEENTRY32W| m.modBaseAddr as u64,
+                    |m: &MODULEENTRY32W| (m.modBaseAddr as u64, Some(m.hModule)),
                     |x| (&cmp)(crate::Data::Str(x.as_str())),
                 )(m, &m.szExePath)
             },
@@ -779,8 +768,8 @@ fn get_module(name: crate::Data, proc: &Process) -> Result<(String, u64)> {
                 predicate(
                     |w: pelite::Wrap<LDR_DATA_TABLE_ENTRY32, ntdll::LDR_DATA_TABLE_ENTRY64>| match w
                     {
-                        pelite::Wrap::T32(w) => w.DllBase as u64,
-                        pelite::Wrap::T64(w) => w.DllBase as u64,
+                        pelite::Wrap::T32(w) => (w.DllBase as u64, None),
+                        pelite::Wrap::T64(w) => (w.DllBase as u64, None),
                     },
                     |x| (&cmp)(crate::Data::Str(x.as_str())),
                 ),
@@ -793,12 +782,12 @@ fn get_module(name: crate::Data, proc: &Process) -> Result<(String, u64)> {
 ///This gets the Relative Virtual Address (rva) of the function name, from a pe-file.
 ///This function will make sure, that all requests, that according to path should go to %windir%/System32, actually go there.
 ///If you want to get an export from a 32-bit dll under 64-bit windows specify %windir%/SysWOW64.
-fn get_dll_export(name: &str, path: String) -> Result<u32> {
+fn get_dll_export(name: &str, path: alloc::string::String) -> Result<u32> {
     let path = if process::Process::self_proc().is_under_wow()? {
         let str = get_windir()?.clone();
         path.replace(
-            &(str.clone() + &"\\System32".to_string()),
-            &(str + &"\\Sysnative".to_string()),
+            (str.clone() + "\\System32").as_str(),
+            (str + "\\Sysnative").as_str(),
         )
     } else {
         path
@@ -904,14 +893,18 @@ pub mod test {
         simple_logger::init().ok();
         let windir = super::get_windir()?;
         let mut path = windir.clone();
-        path.push_str(r"\System32\cmd.exe");
+
+        const cmd_path: &'static str = if cfg!(target_pointer_width = "32")
+        //On 32-bit wow redirects the path
+        {
+            r"\SysWOW64\cmd.exe"
+        } else {
+            r"\System32\cmd.exe"
+        };
+
+        path.push_str(cmd_path);
 
         log::info!("{}", path);
-
-        //On 32-bit wow redirects the path
-        #[cfg(target_pointer_width = "32")]
-        let path = path.replace("System32", "SysWOW64");
-
         //non-std
         {
             let (fp, lps) = super::canonicalize(&crate::Data::Str(path.as_str()))?;
