@@ -100,7 +100,11 @@ fn canonicalize(p: &crate::Data) -> Result<(String, Option<String>)> {
             };
             log::trace!("Size of fp is {}", size);
             //Get Full Path
-            buf.reserve_exact(size as usize);
+            //todo: why is +1 needed here?
+            //      Without dropping this will result in a error (Heap Corruprion or Access violations).
+            //      Also the return value for GetFinalPathNameByHandleW should include the size of the null-byte if not enough capacity exists.
+            buf.reserve_exact(size as usize + 1);
+
             unsafe {
                 core::ptr::write_bytes(buf.as_mut_ptr(), 0, size as usize + 1);
             }
@@ -166,6 +170,7 @@ fn canonicalize(p: &crate::Data) -> Result<(String, Option<String>)> {
                 ));
             }
             log::info!("Size of fp is {},{}", size, err);
+            assert!(buf.capacity() >= size as usize);
             //Safety: Trust windows
             unsafe { buf.set_len(size as usize) };
 
@@ -315,7 +320,6 @@ impl<'a> Inject for InjectWin<'a> {
             mempage
         };
         self.exec_fn_in_proc(&proc, "LoadLibraryW", mem.get_address())
-
     }
     ///This function will attempt, to eject a dll from another process.
     ///Notice: This implementation blocks, and waits, until the library is ejected?, or the ejection failed.
@@ -679,11 +683,12 @@ where
     }
 }
 ///This gets the directory, where windows files reside. Usually C:\Windows
-fn get_windir<'a>() -> Result<&'a String> {
-    static WINDIR: once_cell::race::OnceBox<String> = once_cell::race::OnceBox::new();
+fn get_windir<'a>() -> Result<&'a alloc::string::String> {
+    static WINDIR: once_cell::race::OnceBox<alloc::string::String> =
+        once_cell::race::OnceBox::new();
     let str = WINDIR.get_or_try_init(||{
 		let i=check_ptr!(GetSystemWindowsDirectoryW(core::ptr::null_mut(),0),|v|v==0);
-		let mut str_buf:Vec<u16> = Vec::with_capacity( i as usize);
+		let mut str_buf:alloc::vec::Vec<u16> = Vec::with_capacity( i as usize);
 		let i2=check_ptr!(GetSystemWindowsDirectoryW(str_buf.as_mut_ptr(),i),|v|v==0);
         assert!(i2<=i,"GetSystemWindowsDirectoryA says, that {} bytes are needed, but then changed it's mind. Now {} bytes are needed.",i,i2);
 		unsafe{str_buf.set_len(i2 as usize)};
@@ -777,12 +782,12 @@ fn get_module(name: crate::Data, proc: &Process) -> Result<(String, (u64, Option
 ///This gets the Relative Virtual Address (rva) of the function name, from a pe-file.
 ///This function will make sure, that all requests, that according to path should go to %windir%/System32, actually go there.
 ///If you want to get an export from a 32-bit dll under 64-bit windows specify %windir%/SysWOW64.
-fn get_dll_export(name: &str, path: String) -> Result<u32> {
+fn get_dll_export(name: &str, path: alloc::string::String) -> Result<u32> {
     let path = if process::Process::self_proc().is_under_wow()? {
         let str = get_windir()?.clone();
         path.replace(
-            &(str.clone() + &"\\System32".to_string()),
-            &(str + &"\\Sysnative".to_string()),
+            (str.clone() + "\\System32").as_str(),
+            (str + "\\Sysnative").as_str(),
         )
     } else {
         path
@@ -888,14 +893,18 @@ pub mod test {
         simple_logger::init().ok();
         let windir = super::get_windir()?;
         let mut path = windir.clone();
-        path.push_str(r"\System32\cmd.exe");
+
+        const cmd_path: &'static str = if cfg!(target_pointer_width = "32")
+        //On 32-bit wow redirects the path
+        {
+            r"\SysWOW64\cmd.exe"
+        } else {
+            r"\System32\cmd.exe"
+        };
+
+        path.push_str(cmd_path);
 
         log::info!("{}", path);
-
-        //On 32-bit wow redirects the path
-        #[cfg(target_pointer_width = "32")]
-        let path = path.replace("System32", "SysWOW64");
-
         //non-std
         {
             let (fp, lps) = super::canonicalize(&crate::Data::Str(path.as_str()))?;
