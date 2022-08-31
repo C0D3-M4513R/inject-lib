@@ -30,6 +30,10 @@ mod ntdll;
 pub(super) mod process;
 mod thread;
 
+const KERNEL32: &'static str = "KERNEL32.DLL";
+const SYSWOW64: &'static str = "SysWOW64";
+const SYSTEM32: &'static str = "System32";
+
 #[cfg(feature = "ntdll")]
 use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
 use winapi::um::errhandlingapi::GetLastError;
@@ -456,7 +460,12 @@ impl<'a> InjectWin<'a> {
         }
 
         let entry_point = {
-            let (path, (base, _)) = get_module(crate::Data::Str("KERNEL32.DLL"), &proc)?;
+            let (path, (base, _)) = get_module(crate::Data::Str(KERNEL32), &proc)?;
+            let path = if proc.is_under_wow()? {
+                path.replace(SYSTEM32, SYSWOW64)
+            } else {
+                path
+            };
             base + get_dll_export(entry_fn, path)? as u64
         };
         crate::info!(
