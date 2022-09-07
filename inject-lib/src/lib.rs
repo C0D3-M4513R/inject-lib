@@ -32,7 +32,6 @@ extern crate alloc;
 compile_error!("inject_lib doesn't yet support no alloc environments");
 extern crate core;
 
-use alloc::vec::Vec;
 use core::fmt::{Display, Formatter};
 
 ///This struct will expose certain module private functions, to actually use the api.
@@ -82,13 +81,18 @@ impl<'a> Display for Data<'a> {
     }
 }
 impl<'a> Data<'a> {
-    fn get_str(&self) -> Option<&'a str> {
+    ///Gets the contained Str variant, if contained data is a string.
+    ///Note: On no-std, this should always be SOME, because there is no other variant on no-std.
+    #[allow(unused)]
+    pub fn get_str(&self) -> Option<&'a str> {
         match self {
             Data::Str(a) => Some(a),
             _ => None,
         }
     }
     #[cfg(feature = "std")]
+    #[allow(unused)]
+    ///This gets the Path variant, if the contained data is a string.
     fn get_path(&self) -> Option<&'a std::path::Path> {
         match self {
             Data::Path(a) => Some(a),

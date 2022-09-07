@@ -5,10 +5,10 @@ use crate::{cmp, Data, Inject, Injector, Result};
 use macros::check_ptr;
 
 use alloc::string::{String, ToString};
+#[cfg(all(not(feature = "std"), feature = "alloc"))]
+//On std Vec is already imported, so we don't need to actually import this again
 use alloc::vec::Vec;
-
 use core::mem::size_of;
-use log::error;
 use pelite::Pod;
 use winapi::shared::minwindef::{DWORD, FALSE, HMODULE, LPVOID, MAX_PATH};
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
@@ -36,11 +36,12 @@ const SYSTEM32: &'static str = "System32";
 
 #[cfg(feature = "ntdll")]
 use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
+#[cfg(not(feature = "std"))]
 use winapi::um::errhandlingapi::GetLastError;
+#[cfg(not(feature = "std"))]
 use winapi::um::winbase::GetFileInformationByHandleEx;
 
 use crate::error::Error;
-use mem::MemPage;
 use process::Process;
 
 ///This function builds a String, from a WTF-encoded buffer.
@@ -241,7 +242,7 @@ fn read(file: &Data) -> Result<Vec<u8>> {
         let _ = cleanup();
         return Err(crate::error::Error::from("GetFileSizeEx in read"));
     }
-    let mut size = *unsafe { size.QuadPart() };
+    let size = *unsafe { size.QuadPart() };
     let mut read = 0;
     log::info!("Requested read of {} byte file", size);
     //Create a buffer
@@ -251,16 +252,16 @@ fn read(file: &Data) -> Result<Vec<u8>> {
     while read < size {
         let mut bytes_read: u32 = 0;
         //we are not reading async, because we did not set FILE_FLAG_OVERLAPPED in the handle creation
-        let returnCode = unsafe {
+        let return_code = unsafe {
             ReadFile(
                 r,
-                file_contents.spare_capacity_mut().as_mut_ptr() as *mut winapi::ctypes::c_void,
+                file_contents.as_mut_ptr().add(file_contents.len()) as *mut winapi::ctypes::c_void,
                 size as u32,
                 &mut bytes_read as *mut u32,
                 core::ptr::null_mut(),
             )
         };
-        if returnCode == 0 {
+        if return_code == 0 {
             let _ = cleanup();
             return Err(crate::error::Error::from("ReadFile in read"));
         }
@@ -328,7 +329,7 @@ impl<'a> Inject for InjectWin<'a> {
     ///This function will attempt, to eject a dll from another process.
     ///Notice: This implementation blocks, and waits, until the library is ejected?, or the ejection failed.
     fn eject(&self) -> Result<()> {
-        const x86ejectx64: crate::error::Error = crate::error::Error::Unsupported(Some(
+        const X86EJECTX64: crate::error::Error = crate::error::Error::Unsupported(Some(
             "ejecting is not currently supported from a x86 binary targeting a x64 process.",
         ));
 
@@ -341,7 +342,7 @@ impl<'a> Inject for InjectWin<'a> {
                 | PROCESS_QUERY_INFORMATION,
         )?;
         if Process::self_proc().is_under_wow()? && !proc.is_under_wow()? {
-            return Err(x86ejectx64);
+            return Err(X86EJECTX64);
         }
 
         let name = canonicalize(&self.inj.dll)?.1;
@@ -351,9 +352,9 @@ impl<'a> Inject for InjectWin<'a> {
         };
         // let (_path, base) = get_module(name.as_str(), &proc)?;
         let handle = match get_module(crate::Data::Str(name.as_str()), &proc) {
-            Ok((str, (base, Some(h)))) => h,
+            Ok((_, (_, Some(h)))) => h,
             Ok(_) => {
-                return Err(x86ejectx64);
+                return Err(X86EJECTX64);
             }
             Err(_) => {
                 return Err(crate::error::Error::InjectLib(
