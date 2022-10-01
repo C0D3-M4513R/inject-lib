@@ -168,6 +168,21 @@ pub fn trim_wide_str<const FAST: bool>(v: &[u16]) -> &[u16] {
     return out;
 }
 
+///This function builds a String, from a WTF-encoded buffer.
+pub fn str_from_wide_str(v: &[u16]) -> Result<alloc::string::String> {
+    let tmp: alloc::vec::Vec<Result<char, widestring::error::DecodeUtf16Error>> =
+        widestring::decode_utf16(v.iter().map(|x| *x)).collect();
+    let mut o = alloc::string::String::with_capacity(v.len());
+    for i in tmp {
+        match i {
+            Err(e) => return Err(crate::error::Error::WTFConvert(e)),
+            Ok(v) => o.push(v),
+        }
+    }
+    o.shrink_to_fit();
+    Ok(o)
+}
+
 ///Returns a function, which compares [crate::Data] against some other [crate::Data].
 ///If in no_std enviromenmt, the comparison is affected by forward-slash vs back-slash
 //todo: make the second function call better

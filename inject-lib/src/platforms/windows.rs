@@ -1,7 +1,7 @@
 #![cfg(windows)]
 mod macros;
 
-use crate::{cmp, Data, Inject, Injector, Result};
+use crate::{cmp, Data, Inject, Injector, Result,str_from_wide_str};
 use macros::check_ptr;
 
 use alloc::string::{String, ToString};
@@ -43,21 +43,6 @@ use winapi::um::winbase::GetFileInformationByHandleEx;
 
 use crate::error::Error;
 use process::Process;
-
-///This function builds a String, from a WTF-encoded buffer.
-pub fn str_from_wide_str(v: &[u16]) -> Result<String> {
-    let tmp: Vec<Result<char, widestring::error::DecodeUtf16Error>> =
-        widestring::decode_utf16(v.iter().map(|x| *x)).collect();
-    let mut o = String::with_capacity(v.len());
-    for i in tmp {
-        match i {
-            Err(e) => return Err(crate::error::Error::WTFConvert(e)),
-            Ok(v) => o.push(v),
-        }
-    }
-    o.shrink_to_fit();
-    Ok(o)
-}
 
 ///This function builds a String, from a WTF-encoded buffer.
 pub fn wide_str_from_str(v: &str) -> Vec<u16> {

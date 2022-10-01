@@ -3,8 +3,10 @@ use std::os::windows::process::CommandExt;
 use std::process::Child;
 use std::thread::sleep;
 use std::time::Duration;
+use winapi::um::sysinfoapi::GetSystemWindowsDirectoryW;
 use inject_lib::Inject;
 use inject_lib::{Data, Injector};
+use inject_lib::str_from_wide_str;
 
 const SYSTEMDIR64:&str = "System32";
 const SYSTEMDIR32:&str = "SYSWOW64";
@@ -58,12 +60,20 @@ fn print_arch(){
 	println!("Arch is 32bit")
 }
 
-fn get_windir() -> String{
-	let windir_a = Vec::from_iter(std::env::vars_os().filter(|(k,_)|k.to_string_lossy()=="WINDIR"));
-	if windir_a.len()<1usize {panic!("Expected a Windir env variable")}
-	let dir = windir_a.get(0).unwrap().1.to_str().unwrap().to_string();
-	println!("Got Windir");
-	dir
+///This gets the directory, where windows files reside. Usually C:\Windows
+fn get_windir<'a>() -> String {
+	unsafe{
+		let i=GetSystemWindowsDirectoryW(core::ptr::null_mut(),0);
+		if i==0{panic!("GetSystemWindowsDirectoryW failed");}
+		let mut str_buf:Vec<u16> = Vec::with_capacity( i as usize);
+		let i2=GetSystemWindowsDirectoryW(str_buf.as_mut_ptr(),i);
+		if i2==0{panic!("GetSystemWindowsDirectoryW failed");}
+		assert!(i2<=i,"GetSystemWindowsDirectoryA says, that {} bytes are needed, but then changed it's mind. Now {} bytes are needed.",i,i2);
+		str_buf.set_len(i2 as usize);
+		let string = str_from_wide_str(str_buf.as_slice()).unwrap();
+		println!("Windir is {},{},{}",string,i,i2);
+		string
+	}
 }
 
 fn create_process(cmd:String)->Child{
