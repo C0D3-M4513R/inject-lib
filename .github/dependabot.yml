@@ -2,7 +2,7 @@
 
 version: 2
 updates:
-
+    target-branch: dev
     # Maintain dependencies for GitHub Actions
     -   package-ecosystem: "github-actions"
         directory: "/"
@@ -12,4 +12,9 @@ updates:
     -   package-ecosystem: "cargo"
         directory: "./inject-lib"
         schedule:
-            interval: "monthly"
+            interval: "daily"
+    - package-ecosystem: "cargo"
+      directory: "./dll-inject"
+      schedule:
+          interval: "daily"
+          
