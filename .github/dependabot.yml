@@ -2,18 +2,20 @@
 
 version: 2
 updates:
-    target-branch: dev
     # Maintain dependencies for GitHub Actions
     -   package-ecosystem: "github-actions"
+        target-branch: dev
         directory: "/"
         schedule:
             interval: "daily"
     # Maintain dependencies for rust
     -   package-ecosystem: "cargo"
+        target-branch: dev
         directory: "./inject-lib"
         schedule:
             interval: "daily"
     - package-ecosystem: "cargo"
+      target-branch: dev
       directory: "./dll-inject"
       schedule:
           interval: "daily"
