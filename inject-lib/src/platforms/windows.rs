@@ -1,7 +1,7 @@
 #![cfg(windows)]
 mod macros;
 
-use crate::{cmp, Data, Inject, Injector, Result,str_from_wide_str};
+use crate::{cmp, str_from_wide_str, Data, Inject, Injector, Result};
 use macros::check_ptr;
 
 use alloc::string::{String, ToString};
@@ -326,7 +326,6 @@ impl<'a> Inject for InjectWin<'a> {
                 | PROCESS_VM_OPERATION
                 | PROCESS_QUERY_INFORMATION,
         )?;
-
 
         let name = canonicalize(&self.inj.dll)?.1;
         let name = match name {
