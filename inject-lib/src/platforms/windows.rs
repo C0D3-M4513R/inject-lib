@@ -329,7 +329,7 @@ impl<'a> Inject for InjectWin<'a> {
     ///This function will attempt, to eject a dll from another process.
     ///Notice: This implementation blocks, and waits, until the library is ejected?, or the ejection failed.
     fn eject(&self) -> Result<()> {
-        const x86ejectx64: crate::error::Error = crate::error::Error::Unsupported(Some(
+        const X86EJECTX64: crate::error::Error = crate::error::Error::Unsupported(Some(
             "ejecting is not currently supported from a x86 binary targeting a x64 process.",
         ));
 
@@ -736,7 +736,7 @@ where
 ///
 ///The return value is (dll name, (dll base address, dll handle))
 //This return type is getting out of hand. Mayebe consider a struct for this?
-fn get_module(name: crate::Data, proc: &Process) -> Result<(String, (u64, Option<HMODULE>))> {
+fn get_module(name: crate::Data, proc: &Process) -> Result<(String, (u64, Option<LPVOID>))> {
     let cmp = cmp(name);
     let ntdll = !process::Process::self_proc().is_under_wow()? || proc.is_under_wow()?;
     #[cfg(test)]
@@ -746,7 +746,7 @@ fn get_module(name: crate::Data, proc: &Process) -> Result<(String, (u64, Option
             proc.get_pid(),
             |m| {
                 predicate(
-                    |m: &MODULEENTRY32W| (m.modBaseAddr as u64, Some(m.hModule)),
+                    |m: &MODULEENTRY32W| (m.modBaseAddr as u64, Some(m.hModule as LPVOID)),
                     |x| (&cmp)(crate::Data::Str(x.as_str())),
                 )(m, &m.szExePath)
             },
@@ -776,8 +776,9 @@ fn get_module(name: crate::Data, proc: &Process) -> Result<(String, (u64, Option
                 predicate(
                     |w: pelite::Wrap<LDR_DATA_TABLE_ENTRY32, ntdll::LDR_DATA_TABLE_ENTRY64>| match w
                     {
-                        pelite::Wrap::T32(w) => (w.DllBase as u64, None),
-                        pelite::Wrap::T64(w) => (w.DllBase as u64, None),
+                        //todo: the dll address is not garunteed to be the dll handle, but that seems to be the case.
+                        pelite::Wrap::T32(w) => (w.DllBase as u64, Some(w.DllBase as LPVOID)),
+                        pelite::Wrap::T64(w) => (w.DllBase as u64, Some(w.DllBase as LPVOID)),
                     },
                     |x| (&cmp)(crate::Data::Str(x.as_str())),
                 ),
