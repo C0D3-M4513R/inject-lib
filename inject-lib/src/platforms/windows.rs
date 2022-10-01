@@ -329,7 +329,7 @@ impl<'a> Inject for InjectWin<'a> {
     ///This function will attempt, to eject a dll from another process.
     ///Notice: This implementation blocks, and waits, until the library is ejected?, or the ejection failed.
     fn eject(&self) -> Result<()> {
-        const X86EJECTX64: crate::error::Error = crate::error::Error::Unsupported(Some(
+        const x86ejectx64: crate::error::Error = crate::error::Error::Unsupported(Some(
             "ejecting is not currently supported from a x86 binary targeting a x64 process.",
         ));
 
@@ -341,9 +341,7 @@ impl<'a> Inject for InjectWin<'a> {
                 | PROCESS_VM_OPERATION
                 | PROCESS_QUERY_INFORMATION,
         )?;
-        if Process::self_proc().is_under_wow()? && !proc.is_under_wow()? {
-            return Err(X86EJECTX64);
-        }
+
 
         let name = canonicalize(&self.inj.dll)?.1;
         let name = match name {
