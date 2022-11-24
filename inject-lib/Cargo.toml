@@ -46,7 +46,7 @@ once_cell={version="1.10",default-features=false,features=["race"]}
 widestring = {version="1",default-features=false}
 
 [dev-dependencies]
-simple_logger = {version = "3.0.0",default-features=false}
+simple_logger = {version = "4.0.0",default-features=false}
 thread_local = "1.1.4"
 
 [lib]
