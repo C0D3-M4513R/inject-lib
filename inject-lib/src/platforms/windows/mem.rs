@@ -62,7 +62,7 @@ impl<'a> MemPage<'a> {
     ///# Panic
     /// This Panics, if the buffer would overflow the size of allocated memory.
     pub fn write<T>(&mut self, buffer: &[T]) -> Result<usize> {
-        let t_len:usize = core::mem::size_of::<T>();
+        let t_len: usize = core::mem::size_of::<T>();
         //https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-writeprocessmemory
         if !self.proc.has_perm(PROCESS_VM_WRITE) {
             return Err(crate::error::CustomError::PermissionDenied.into());
@@ -74,7 +74,7 @@ impl<'a> MemPage<'a> {
                 self.proc.get_proc(),
                 self.addr,
                 buffer.as_ptr() as LPCVOID,
-                buffer.len() * t_len ,
+                buffer.len() * t_len,
                 &mut n as *mut usize,
             ) == FALSE
         } {
