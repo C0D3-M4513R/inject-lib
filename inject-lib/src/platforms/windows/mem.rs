@@ -61,25 +61,26 @@ impl<'a> MemPage<'a> {
     ///
     ///# Panic
     /// This Panics, if the buffer would overflow the size of allocated memory.
-    pub fn write(&mut self, buffer: &[u8]) -> Result<usize> {
+    pub fn write<T>(&mut self, buffer: &[T]) -> Result<usize> {
+        let t_len:usize = core::mem::size_of::<T>();
         //https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-writeprocessmemory
         if !self.proc.has_perm(PROCESS_VM_WRITE) {
             return Err(crate::error::CustomError::PermissionDenied.into());
         }
         let mut n: usize = 0;
-        assert!(buffer.len() <= self.size);
+        assert!(buffer.len() * t_len <= self.size);
         if unsafe {
             WriteProcessMemory(
                 self.proc.get_proc(),
                 self.addr,
                 buffer.as_ptr() as LPCVOID,
-                buffer.len(),
+                buffer.len() * t_len ,
                 &mut n as *mut usize,
             ) == FALSE
         } {
             return Err(err("WriteProcessMemory"));
         }
-        debug_assert!(n == buffer.len());
+        debug_assert!(n == buffer.len() * t_len);
         Ok(n)
     }
     ///Reads the contents of the memory page.
@@ -124,6 +125,7 @@ impl<'a> MemPage<'a> {
     }
     ///Checks, if the Process, this MemoryPage was allocated in is valid in another Process object.
     #[must_use]
+    #[allow(dead_code)]
     pub fn check_proc(&self, proc: &Process) -> bool {
         self.proc.get_pid() == proc.get_pid()
     }

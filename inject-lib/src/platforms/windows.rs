@@ -9,8 +9,7 @@ use alloc::string::{String, ToString};
 //On std Vec is already imported, so we don't need to actually import this again
 use alloc::vec::Vec;
 use core::mem::size_of;
-use pelite::Pod;
-use winapi::shared::minwindef::{DWORD, FALSE, HMODULE, LPVOID, MAX_PATH};
+use winapi::shared::minwindef::{DWORD, FALSE, LPVOID, MAX_PATH};
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
 use winapi::um::processthreadsapi::CreateRemoteThread;
 use winapi::um::sysinfoapi::GetSystemWindowsDirectoryW;
@@ -306,7 +305,7 @@ impl<'a> Inject for InjectWin<'a> {
             full_path.push(0);
             let mut mempage =
                 mem::MemPage::new(&proc, full_path.len() * core::mem::size_of::<u16>(), false)?;
-            mempage.write(full_path.as_bytes())?;
+            mempage.write(full_path.as_slice())?;
             mempage
         };
         self.exec_fn_in_proc(&proc, "LoadLibraryW", mem.get_address())
