@@ -1,16 +1,15 @@
 #![cfg(windows)]
 mod macros;
 
-use crate::{cmp, Data, Inject, Injector, Result};
+use crate::{cmp, str_from_wide_str, Data, Inject, Injector, Result};
 use macros::check_ptr;
 
 use alloc::string::{String, ToString};
+#[cfg(all(not(feature = "std"), feature = "alloc"))]
+//On std Vec is already imported, so we don't need to actually import this again
 use alloc::vec::Vec;
-
 use core::mem::size_of;
-use log::error;
-use pelite::Pod;
-use winapi::shared::minwindef::{DWORD, FALSE, HMODULE, LPVOID, MAX_PATH};
+use winapi::shared::minwindef::{DWORD, FALSE, LPVOID, MAX_PATH};
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
 use winapi::um::processthreadsapi::CreateRemoteThread;
 use winapi::um::sysinfoapi::GetSystemWindowsDirectoryW;
@@ -36,27 +35,13 @@ const SYSTEM32: &'static str = "System32";
 
 #[cfg(feature = "ntdll")]
 use ntapi::ntwow64::LDR_DATA_TABLE_ENTRY32;
+#[cfg(not(feature = "std"))]
 use winapi::um::errhandlingapi::GetLastError;
+#[cfg(not(feature = "std"))]
 use winapi::um::winbase::GetFileInformationByHandleEx;
 
 use crate::error::Error;
-use mem::MemPage;
 use process::Process;
-
-///This function builds a String, from a WTF-encoded buffer.
-pub fn str_from_wide_str(v: &[u16]) -> Result<String> {
-    let tmp: Vec<Result<char, widestring::error::DecodeUtf16Error>> =
-        widestring::decode_utf16(v.iter().map(|x| *x)).collect();
-    let mut o = String::with_capacity(v.len());
-    for i in tmp {
-        match i {
-            Err(e) => return Err(crate::error::Error::WTFConvert(e)),
-            Ok(v) => o.push(v),
-        }
-    }
-    o.shrink_to_fit();
-    Ok(o)
-}
 
 ///This function builds a String, from a WTF-encoded buffer.
 pub fn wide_str_from_str(v: &str) -> Vec<u16> {
@@ -241,7 +226,7 @@ fn read(file: &Data) -> Result<Vec<u8>> {
         let _ = cleanup();
         return Err(crate::error::Error::from("GetFileSizeEx in read"));
     }
-    let mut size = *unsafe { size.QuadPart() };
+    let size = *unsafe { size.QuadPart() };
     let mut read = 0;
     log::info!("Requested read of {} byte file", size);
     //Create a buffer
@@ -251,16 +236,16 @@ fn read(file: &Data) -> Result<Vec<u8>> {
     while read < size {
         let mut bytes_read: u32 = 0;
         //we are not reading async, because we did not set FILE_FLAG_OVERLAPPED in the handle creation
-        let returnCode = unsafe {
+        let return_code = unsafe {
             ReadFile(
                 r,
-                file_contents.spare_capacity_mut().as_mut_ptr() as *mut winapi::ctypes::c_void,
+                file_contents.as_mut_ptr().add(file_contents.len()) as *mut winapi::ctypes::c_void,
                 size as u32,
                 &mut bytes_read as *mut u32,
                 core::ptr::null_mut(),
             )
         };
-        if returnCode == 0 {
+        if return_code == 0 {
             let _ = cleanup();
             return Err(crate::error::Error::from("ReadFile in read"));
         }
@@ -320,7 +305,7 @@ impl<'a> Inject for InjectWin<'a> {
             full_path.push(0);
             let mut mempage =
                 mem::MemPage::new(&proc, full_path.len() * core::mem::size_of::<u16>(), false)?;
-            mempage.write(full_path.as_bytes())?;
+            mempage.write(full_path.as_slice())?;
             mempage
         };
         self.exec_fn_in_proc(&proc, "LoadLibraryW", mem.get_address())
@@ -328,7 +313,7 @@ impl<'a> Inject for InjectWin<'a> {
     ///This function will attempt, to eject a dll from another process.
     ///Notice: This implementation blocks, and waits, until the library is ejected?, or the ejection failed.
     fn eject(&self) -> Result<()> {
-        const x86ejectx64: crate::error::Error = crate::error::Error::Unsupported(Some(
+        const X86EJECTX64: crate::error::Error = crate::error::Error::Unsupported(Some(
             "ejecting is not currently supported from a x86 binary targeting a x64 process.",
         ));
 
@@ -340,9 +325,6 @@ impl<'a> Inject for InjectWin<'a> {
                 | PROCESS_VM_OPERATION
                 | PROCESS_QUERY_INFORMATION,
         )?;
-        if Process::self_proc().is_under_wow()? && !proc.is_under_wow()? {
-            return Err(x86ejectx64);
-        }
 
         let name = canonicalize(&self.inj.dll)?.1;
         let name = match name {
@@ -351,9 +333,9 @@ impl<'a> Inject for InjectWin<'a> {
         };
         // let (_path, base) = get_module(name.as_str(), &proc)?;
         let handle = match get_module(crate::Data::Str(name.as_str()), &proc) {
-            Ok((str, (base, Some(h)))) => h,
+            Ok((_, (_, Some(h)))) => h,
             Ok(_) => {
-                return Err(x86ejectx64);
+                return Err(X86EJECTX64);
             }
             Err(_) => {
                 return Err(crate::error::Error::InjectLib(
@@ -737,7 +719,7 @@ where
 ///
 ///The return value is (dll name, (dll base address, dll handle))
 //This return type is getting out of hand. Mayebe consider a struct for this?
-fn get_module(name: crate::Data, proc: &Process) -> Result<(String, (u64, Option<HMODULE>))> {
+fn get_module(name: crate::Data, proc: &Process) -> Result<(String, (u64, Option<LPVOID>))> {
     let cmp = cmp(name);
     let ntdll = !process::Process::self_proc().is_under_wow()? || proc.is_under_wow()?;
     #[cfg(test)]
@@ -747,7 +729,7 @@ fn get_module(name: crate::Data, proc: &Process) -> Result<(String, (u64, Option
             proc.get_pid(),
             |m| {
                 predicate(
-                    |m: &MODULEENTRY32W| (m.modBaseAddr as u64, Some(m.hModule)),
+                    |m: &MODULEENTRY32W| (m.modBaseAddr as u64, Some(m.hModule as LPVOID)),
                     |x| (&cmp)(crate::Data::Str(x.as_str())),
                 )(m, &m.szExePath)
             },
@@ -777,8 +759,9 @@ fn get_module(name: crate::Data, proc: &Process) -> Result<(String, (u64, Option
                 predicate(
                     |w: pelite::Wrap<LDR_DATA_TABLE_ENTRY32, ntdll::LDR_DATA_TABLE_ENTRY64>| match w
                     {
-                        pelite::Wrap::T32(w) => (w.DllBase as u64, None),
-                        pelite::Wrap::T64(w) => (w.DllBase as u64, None),
+                        //todo: the dll address is not garunteed to be the dll handle, but that seems to be the case.
+                        pelite::Wrap::T32(w) => (w.DllBase as u64, Some(w.DllBase as LPVOID)),
+                        pelite::Wrap::T64(w) => (w.DllBase as u64, Some(w.DllBase as LPVOID)),
                     },
                     |x| (&cmp)(crate::Data::Str(x.as_str())),
                 ),

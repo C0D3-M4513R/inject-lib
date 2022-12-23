@@ -1,6 +1,6 @@
 [package]
 name = "inject-lib"
-version = "0.3.2"
+version = "0.3.3"
 description = "A windows dll injection library written in rust with minimal dependencies."
 readme = "README.md"
 repository = "https://github.com/C0D3-M4513R/inject-lib"
@@ -37,8 +37,8 @@ features=[
 ]
 
 [target.'cfg(target_family="windows")'.dependencies]
-ntapi={version="0.3",optional=true}#Types
-pelite ={version="0.9", default-features=false, features=["derive_pod"]} #to read/parse dll information. #todo: maybe replace with exe-rs?
+ntapi={version="0.4",optional=true}#Types
+pelite ={version="0.10", default-features=false, features=["derive_pod"]} #to read/parse dll information. #todo: maybe replace with exe-rs?
 
 [dependencies]
 log = "0.4"
@@ -46,7 +46,7 @@ once_cell={version="1.10",default-features=false,features=["race"]}
 widestring = {version="1",default-features=false}
 
 [dev-dependencies]
-simple_logger = {version = "2.1.0",default-features=false}
+simple_logger = {version = "4.0.0",default-features=false}
 thread_local = "1.1.4"
 
 [lib]
