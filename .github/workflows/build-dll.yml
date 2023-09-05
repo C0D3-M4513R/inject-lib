@@ -26,7 +26,7 @@ jobs:
         feature: ["alloc","alloc std"]
         target: [i686-pc-windows-msvc, i686-pc-windows-gnu ,x86_64-pc-windows-msvc, x86_64-pc-windows-gnu]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
