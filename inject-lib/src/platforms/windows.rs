@@ -823,7 +823,7 @@ pub mod test {
     use winapi::um::libloaderapi::{FreeLibrary, LoadLibraryA};
     use winapi::um::tlhelp32::MODULEENTRY32W;
     use winapi::um::winbase::CREATE_NEW_CONSOLE;
-    use winapi::um::winnt::PROCESS_ALL_ACCESS;
+    use winapi::um::winnt::{PROCESS_ALL_ACCESS, PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE, PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE, SYNCHRONIZE};
 
     std::thread_local! {
         pub(in super) static FNS_M:FNS=FNS::default();
@@ -864,7 +864,7 @@ pub mod test {
             super::process::Process::from_raw_parts(
                 c.as_raw_handle() as usize,
                 c.id(),
-                CREATE_NEW_CONSOLE | PROCESS_ALL_ACCESS,
+                CREATE_NEW_CONSOLE | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_QUERY_INFORMATION | PROCESS_TERMINATE,
             )
         };
         (c, proc)
