@@ -3,3 +3,4 @@ members = [
     "inject-lib",
     "dll-inject"
 ]
+resolver = "2"

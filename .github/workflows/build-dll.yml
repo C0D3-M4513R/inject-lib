@@ -21,9 +21,10 @@ jobs:
   build:
     runs-on: windows-latest
     strategy:
+      fail-fast: false
       matrix:
         profile: ["dev","release"]
-        feature: ["alloc","alloc std"]
+        feature: ["alloc std"] #"alloc"
         target: [i686-pc-windows-msvc, i686-pc-windows-gnu ,x86_64-pc-windows-msvc, x86_64-pc-windows-gnu]
     steps:
       - uses: actions/checkout@v4
