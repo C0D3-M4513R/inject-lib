@@ -24,44 +24,47 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        args: [-v] #--release -v,
+        profile: [ "dev","release" ]
         toolchain: ["beta","stable"]
         features: ['"alloc"','"alloc std"','"alloc x86tox64"','"alloc x86tox64 std"']
         target: [i686-pc-windows-msvc,x86_64-pc-windows-msvc]
+        include:
+          - profile: "dev"
+            flag: "debug"
+          - profile: "release"
+            flag: "release"
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
+      - uses: moonrepo/setup-rust@v1
         with:
+          cache-target: ${{ matrix.flag }}
           profile: minimal
-          toolchain: ${{ matrix.toolchain }}
-          override: true
-          target: ${{ matrix.target }}
-      - uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: ${{ matrix.args }} --no-default-features --features ${{ matrix.features }} --target ${{ matrix.target }} --package inject-lib
-      - uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: ${{ matrix.args }} --no-default-features --features ${{ matrix.features }} --target ${{ matrix.target }} --package inject-lib
+          channel: ${{ matrix.toolchain }}
+          targets: ${{ matrix.target }}
+      - name: build
+        run: cargo build --no-default-features --profile ${{ matrix.profile }} --features ${{ matrix.features }} --target ${{ matrix.target }} --package inject-lib
+      - name: test
+        run: cargo test --no-default-features --profile ${{ matrix.profile }} --features ${{ matrix.features }} --target ${{ matrix.target }} --package inject-lib
 
   build-ubuntu:
     name: "build-ubuntu"
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        args: [-v] #--release -v,
+        profile: [ "dev","release" ]
         toolchain: [stable]
+        include:
+          - profile: "dev"
+            flag: "debug"
+          - profile: "release"
+            flag: "release"
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
+      - uses: moonrepo/setup-rust@v1
         with:
-          toolchain: ${{ matrix.toolchain }}
-      - uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: ${{ matrix.args }} --no-default-features --features "ntdll alloc" --package inject-lib
-      - uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: ${{ matrix.args }} --no-default-features --features "ntdll alloc" --package inject-lib
+          cache-target: ${{ matrix.flag }}
+          channel: ${{ matrix.toolchain }}
+      - name: build
+        run: cargo build ${{ matrix.args }} --profile ${{ matrix.profile }} --no-default-features --features "ntdll alloc" --package inject-lib
+      - name: test
+        run: cargo test ${{ matrix.args }} --profile ${{ matrix.profile }} --no-default-features --features "ntdll alloc" --package inject-lib

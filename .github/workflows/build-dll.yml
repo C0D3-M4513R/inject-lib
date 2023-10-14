@@ -26,46 +26,32 @@ jobs:
         profile: ["dev","release"]
         feature: ["alloc std"] #"alloc"
         target: [i686-pc-windows-msvc, i686-pc-windows-gnu ,x86_64-pc-windows-msvc, x86_64-pc-windows-gnu]
+        include:
+          - profile: "dev"
+            flag: "debug"
+          - profile: "release"
+            flag: "release"
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
+      - name: setup rust
+        uses: moonrepo/setup-rust@v1
         with:
-          toolchain: stable
-          target: ${{ matrix.target }}
-      - uses: actions-rs/cargo@v1
-        with:
-          command: install
-          args: cbindgen
-      - uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --target ${{ matrix.target }} --profile ${{ matrix.profile }} --no-default-features --features '${{ matrix.feature }}' --package dll-inject
+          cache-target: ${{ matrix.flag }}
+          targets: ${{ matrix.target }}
+      - name: install cbindgen
+        run: cargo install cbindgen
+      - name: build
+        run: cargo build --target ${{ matrix.target }} --profile ${{ matrix.profile }} --no-default-features --features '${{ matrix.feature }}' --package dll-inject
       - name: generate bindings
         working-directory: ./dll-inject
         run: cbindgen --config cbindgen.toml --crate dll-inject --output dll-inject.h
-
       - name: list dependencies
-        uses: actions-rs/cargo@v1
-        with:
-          command: rustc
-          args: -p dll-inject --features '${{ matrix.feature }}' -- --print native-static-libs
-
+        run: cargo rustc -p dll-inject --features '${{ matrix.feature }}' -- --print native-static-libs
       - uses: actions/upload-artifact@v3
-        name: upload release artifact
-        if: ${{ matrix.profile == 'release' }}
+        name: upload artifact
         with:
-          name: dll-inject-${{ matrix.target}}-release-${{ matrix.feature }}
+          name: dll-inject-${{ matrix.target}}-${{ matrix.profile }}-${{ matrix.feature }}
           path: |
             dll-inject/dll-inject.h
-            target/${{ matrix.target }}/release/libdll_inject.*
-            target/${{ matrix.target }}/release/dll_inject.*
-
-      - uses: actions/upload-artifact@v3
-        name: upload dev artifact
-        if: ${{ matrix.profile == 'dev' }}
-        with:
-          name: dll-inject-${{ matrix.target}}-dev-${{ matrix.feature }}
-          path: |
-            dll-inject/dll-inject.h
-            target/${{ matrix.target }}/debug/dll_inject.*
-            target/${{ matrix.target }}/debug/libdll_inject.*
+            target/${{ matrix.target }}/${{ matrix.flag }}/libdll_inject.*
+            target/${{ matrix.target }}/${{ matrix.flag }}/dll_inject.*
