@@ -65,6 +65,6 @@ jobs:
           cache-target: ${{ matrix.flag }}
           channel: ${{ matrix.toolchain }}
       - name: build
-        run: cargo build --no-fail-fast --profile ${{ matrix.profile }} --no-default-features --features "ntdll alloc" --package inject-lib
+        run: cargo build --profile ${{ matrix.profile }} --no-default-features --features "ntdll alloc" --package inject-lib
       - name: test
         run: cargo test --no-fail-fast --profile ${{ matrix.profile }} --no-default-features --features "ntdll alloc" --package inject-lib
