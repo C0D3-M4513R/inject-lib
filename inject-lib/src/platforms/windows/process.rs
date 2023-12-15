@@ -53,6 +53,7 @@ impl Process {
     }
     ///Checks, if this process has real handle
     #[must_use]
+    #[inline]
     #[cfg_attr(not(any(feature = "ntdll", test)), allow(unused))]
     pub fn has_real_handle(&self) -> bool {
         self.get_proc() != unsafe { GetCurrentProcess() }
@@ -106,16 +107,19 @@ impl Process {
     }
     ///Get the contained process Handle
     #[must_use]
+    #[inline]
     pub fn get_proc(&self) -> HANDLE {
         self.proc as HANDLE
     }
     ///Get the pid, the process Handle represents
     #[must_use]
+    #[inline]
     pub fn get_pid(&self) -> u32 {
         self.pid
     }
     ///Checks if the process handle has a specific permission.
     #[must_use]
+    #[inline]
     pub fn has_perm(&self, perm: DWORD) -> bool {
         return self.perms & perm == perm;
     }

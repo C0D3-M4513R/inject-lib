@@ -1,7 +1,9 @@
 #![cfg(target_family = "windows")]
 #![cfg_attr(not(feature = "std"), no_std)]
-#![cfg(not(feature = "alloc"))]
+#[cfg(not(feature = "alloc"))]
 compile_error!("Cannot work without alloc");
+#[cfg(not(feature = "std"))]
+compile_error!("Currently no-std is not supported, because I cannot find a stable way to make rust happy with the panic handler and eh_personality");
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -24,14 +26,14 @@ fn read(ptr: *mut u8, len: usize) -> Vec<u8> {
 ///A return code of 0 means success.
 pub extern "C" fn inject(pid: u32, dll: *mut u8, len: usize, wait: bool) -> i16 {
     let v = read(dll, len);
-    let dll = core::str::from_utf8(v);
+    let dll = String::from_utf8(v);
     if dll.is_err() {
         #[cfg(feature = "std")]
         eprintln!("inject-lib: ERROR: Non UTF-8 String found.");
         return -2;
     }
     let dll = unsafe { dll.unwrap_unchecked() }; //Safety: checked and handled above;
-    let i = Injector::new(Data::Str(dll), pid);
+    let i = Injector::new(Data::Str(dll.as_str()), pid);
     let r = i.inject(wait).inject();
     if let Err(e) = r {
         #[cfg(feature = "std")]
@@ -46,14 +48,14 @@ pub extern "C" fn inject(pid: u32, dll: *mut u8, len: usize, wait: bool) -> i16 
 ///A return code of 0 means success.
 pub extern "C" fn eject(pid: u32, dll: *mut u8, len: usize, wait: bool) -> i16 {
     let v = read(dll, len);
-    let dll = core::str::from_utf8(v);
+    let dll = String::from_utf8(v);
     if dll.is_err() {
         #[cfg(feature = "std")]
         eprintln!("inject-lib: ERROR: Non UTF-8 String found.");
         return -2;
     }
     let dll = unsafe { dll.unwrap_unchecked() }; //Safety: checked and handled above;
-    let i = Injector::new(Data::Str(dll), pid);
+    let i = Injector::new(Data::Str(dll.as_str()), pid);
     let r = i.inject(wait).eject();
     if let Err(e) = r {
         #[cfg(feature = "std")]
@@ -75,7 +77,7 @@ pub struct FindPid {
 ///Returns a array of pids, if exitcode=0.
 pub extern "C" fn find_pid(name: *mut u8, len: usize) -> FindPid {
     let v = read(name, len);
-    let name = core::str::from_utf8(v);
+    let name = String::from_utf8(v);
     if name.is_err() {
         #[cfg(feature = "std")]
         eprintln!("inject-lib: ERROR: Non UTF-8 String found.");
@@ -86,23 +88,23 @@ pub extern "C" fn find_pid(name: *mut u8, len: usize) -> FindPid {
         };
     }
     let name = unsafe { name.unwrap_unchecked() }; //Safety: checked and handled above;
-    let vec = Injector::find_pid(Data::Str(name));
-    if let Ok(vec) = vec {
+    let vec = Injector::find_pid(Data::Str(name.as_str()));
+    return if let Ok(vec) = vec {
         let v = vec.leak();
         #[cfg(feature = "std")]
         eprintln!("{:x?}", v.as_mut_ptr());
-        return FindPid {
+        FindPid {
             len: v.len(),
             arr: v.as_mut_ptr(),
             exitcode: 0,
-        };
+        }
     } else {
         #[cfg(feature = "std")]
         eprintln!("inject-lib: ERROR:  {}", vec.unwrap_err());
-        return FindPid {
+        FindPid {
             len: 0,
             arr: null_mut(),
             exitcode: -1,
-        };
+        }
     }
 }

@@ -6,14 +6,16 @@ publish = false
 
 [lib]
 crate-type = ["staticlib"]
-required-features = ["alloc"]
+required-features = ["alloc","std"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 inject-lib = {path="../inject-lib",default-features = false,features=["x86tox64"]}
 
 [features]
-default=["alloc"]
+default=["alloc","std"]
 alloc=["inject-lib/alloc"]
 std=["inject-lib/std"]
+#no-std is really wierd with compilation, and probably requires a custom panic handler and eh_personality.
+#Thus for now I won't support it. Make a PR, if you want to add support.
 none=[]
