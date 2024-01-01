@@ -471,7 +471,7 @@ convey the exclusion of warranty; and each file should have at least the
 "copyright" line and a pointer to where the full notice is found.
 
     inject-lib - Allows the user to inject dlls into remote processes
-    Copyright (C) 2022-2023 C0D3 M4513R
+    Copyright (C) 2022-2024 C0D3 M4513R
 
     This library is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
